@@ -12,11 +12,11 @@ function config() {
     return {
         schemaVersion: CONFIG_SCHEMA,
         project: { name: "Example", adapter: "generic" },
-        build: { command: "build", artifacts: [] },
+        build: { units: [] },
         versioning: {},
-        hosting: { github: { enabled: true, sourceRepository: "owner/example", defaultBranch: "trunk" } },
+        hosting: { github: { enabled: true, source: { repository: "owner/example", defaultBranch: "trunk" } } },
         release: { workflowFile: ".github/workflows/publish-release.yml", manifestSchema: RELEASE_SCHEMA },
-        providers: { sentry: { schemaVersion: PROVIDERS.sentry.schemaVersion, enabled: false } },
+        providers: { sentry: { schemaVersion: PROVIDERS.sentry.configSchemaVersion, enabled: false } },
     };
 }
 
@@ -47,13 +47,16 @@ test("dispatch uses a returned fixed run id", async () => {
         github,
         config: config(),
         version: "1.2.3",
-        versionCode: 7,
+        buildNumbers: { android: 7 },
         sourceSha: sha,
         correlation,
         sleep: async () => {},
     });
     assert.equal(result.runId, 41);
     assert.equal(calls.filter(({ options }) => options.method === "POST").length, 1);
+    const dispatch = calls.find(({ options }) => options.method === "POST");
+    assert.equal(dispatch.options.json.inputs.version, "1.2.3");
+    assert.equal(Object.hasOwn(dispatch.options.json.inputs, "versionName"), false);
 });
 
 test("ambiguous dispatch adopts one correlated run without resending", async () => {
@@ -73,7 +76,7 @@ test("ambiguous dispatch adopts one correlated run without resending", async () 
         github,
         config: config(),
         version: "1.2.3",
-        versionCode: 7,
+        buildNumbers: { android: 7 },
         sourceSha: sha,
         correlation,
         sleep: async () => {},

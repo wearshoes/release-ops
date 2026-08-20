@@ -1,62 +1,76 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { installProjectFiles } from "../project-installer.mjs";
+import { validateConfig } from "../config.mjs";
+import { installProjectFiles, planProjectFiles, renderPublishWorkflow } from "../project-installer.mjs";
+import { baseConfig, fixtureRoot } from "./fixtures.mjs";
 
-function config(enabled = true) {
-    return {
-        build: { requiredSecretNames: ["SIGNING_KEY"] },
-        hosting: {
-            github: {
-                enabled,
-                sourceRepository: "owner/example",
-                releaseMode: enabled ? "dual-repository" : "local",
-                defaultBranch: "main",
-            },
-        },
-        release: { workflowFile: ".github/workflows/publish-release.yml" },
-        providers: { sentry: { enabled: enabled, issueSync: enabled, schedule: "17 * * * *" } },
-    };
-}
-
-test("installer writes one-build workflow with explicit Secret metadata", async () => {
-    const root = await mkdtemp(join(tmpdir(), "release-ops-install-"));
-    const manifest = await installProjectFiles(root, config());
-    const workflow = await readFile(join(root, ".github", "workflows", "publish-release.yml"), "utf8");
-    assert.match(workflow, /group: release-ops-publish/u);
-    assert.match(workflow, /ref: \$\{\{ inputs\.sourceSha \}\}/u);
-    assert.equal((workflow.match(/name: Build once/gu) ?? []).length, 1);
-    assert.match(workflow, /RELEASE_REPO_TOKEN: \$\{\{ secrets\.RELEASE_REPO_TOKEN \}\}/u);
-    assert.match(workflow, /SENTRY_ORG_CI_TOKEN: \$\{\{ secrets\.SENTRY_ORG_CI_TOKEN \}\}/u);
-    assert.match(workflow, /SIGNING_KEY: \$\{\{ secrets\.SIGNING_KEY \}\}/u);
-    assert.ok(manifest.files[".release-ops/runtime/release-publisher.mjs"]);
-    const sync = await readFile(join(root, ".github", "workflows", "sentry-issues.yml"), "utf8");
-    const resolver = await readFile(join(root, ".github", "workflows", "resolve-issues.yml"), "utf8");
-    assert.match(sync, /cron: "17 \* \* \* \*"/u);
-    assert.match(sync, /SENTRY_AUTH_TOKEN: \$\{\{ secrets\.SENTRY_AUTH_TOKEN \}\}/u);
-    assert.match(resolver, /SENTRY_WRITE_TOKEN: \$\{\{ secrets\.SENTRY_WRITE_TOKEN \}\}/u);
+test("generated workflow scopes build, Sentry, and release Secrets to their steps", async () => {
+    const config = structuredClone(baseConfig({ sentry: true }));
+    config.build.units[0].requiredSecretNames = ["SIGNING_KEY"];
+    const workflow = renderPublishWorkflow(validateConfig(config));
+    assert.match(workflow, /runs-on: windows-latest/u);
+    assert.match(workflow, /name: Build desktop[\s\S]*env:\n\s+SIGNING_KEY:/u);
+    assert.match(workflow, /Upload sentry debug artifacts[\s\S]*SENTRY_ORG_CI_TOKEN:/u);
+    assert.match(workflow, /Publish locally built artifacts[\s\S]*RELEASE_REPO_TOKEN:/u);
+    assert.doesNotMatch(workflow, /jobs:\n\s+env:/u);
+    assert.equal((workflow.match(/run-build\.mjs/gu) ?? []).length, 1);
+    assert.match(workflow, /download-artifact@[0-9a-f]{40}/u);
+    const parsed = spawnSync("python", ["-c", "import sys, yaml; yaml.safe_load(sys.stdin.read())"], {
+        input: workflow,
+        encoding: "utf8",
+        windowsHide: true,
+    });
+    assert.equal(parsed.status, 0, parsed.stderr);
 });
 
-test("GitHub-disabled install does not create a workflow", async () => {
-    const root = await mkdtemp(join(tmpdir(), "release-ops-local-install-"));
-    const manifest = await installProjectFiles(root, config(false));
-    assert.equal(Object.keys(manifest.files).some((path) => path.includes(".github")), false);
-    assert.ok(manifest.files[".release-ops/runtime/local-release.mjs"]);
+test("Godot uses target-specific hosted runners and Unity uses credential-gated GameCI", () => {
+    const godot = structuredClone(baseConfig());
+    godot.project = { name: "Game", adapter: "godot", adapterOptions: { godotVersion: "4.4.1" } };
+    godot.build.units[0].target = "windows";
+    godot.build.units[0].runner = "windows-latest";
+    const godotWorkflow = renderPublishWorkflow(validateConfig(godot));
+    assert.match(godotWorkflow, /setup-godot@[0-9a-f]{40}/u);
+    assert.match(godotWorkflow, /runs-on: windows-latest/u);
+
+    const selfHostedGodot = structuredClone(godot);
+    selfHostedGodot.build.units[0].runner = "self-hosted";
+    selfHostedGodot.build.units[0].selfHostedReason = "proprietary console SDK";
+    const selfHostedWorkflow = renderPublishWorkflow(validateConfig(selfHostedGodot));
+    assert.match(selfHostedWorkflow, /runs-on: self-hosted/u);
+    assert.doesNotMatch(selfHostedWorkflow, /setup-godot@/u);
+
+    const unity = structuredClone(baseConfig());
+    unity.project = { name: "Unity Game", adapter: "unity", adapterOptions: { license: "personal", projectPath: "." } };
+    delete unity.build.units[0].command;
+    const workflow = renderPublishWorkflow(validateConfig(unity));
+    assert.match(workflow, /unity-builder@[0-9a-f]{40}/u);
+    assert.match(workflow, /UNITY_LICENSE: \$\{\{ secrets\.UNITY_LICENSE \}\}/u);
+    assert.doesNotMatch(workflow, /UNITY_SERIAL:/u);
 });
 
-test("upgrade refuses to overwrite a changed managed file", async () => {
-    const root = await mkdtemp(join(tmpdir(), "release-ops-upgrade-"));
-    await installProjectFiles(root, config(false));
-    await writeFile(join(root, ".release-ops", "runtime", "config.mjs"), "locally changed\n", "utf8");
-    await assert.rejects(installProjectFiles(root, config(false), { upgrade: true }), /local changes/u);
+test("disabling a provider transactionally deletes its unchanged managed workflows", async () => {
+    const root = await fixtureRoot("release-ops-delete-");
+    await installProjectFiles(root, baseConfig({ sentry: true }));
+    const plan = await planProjectFiles(root, baseConfig({ sentry: false }));
+    assert.equal(plan.operations.find(({ path }) => path === ".github/workflows/sentry-issues.yml").operation, "delete");
+    await installProjectFiles(root, baseConfig({ sentry: false }));
+    await assert.rejects(access(join(root, ".github", "workflows", "sentry-issues.yml")), /ENOENT/u);
 });
 
-test("initial install refuses to overwrite an unmanaged workflow", async () => {
-    const root = await mkdtemp(join(tmpdir(), "release-ops-existing-"));
-    await mkdir(join(root, ".github", "workflows"), { recursive: true });
-    await writeFile(join(root, ".github", "workflows", "publish-release.yml"), "project-owned\n", "utf8");
-    await assert.rejects(installProjectFiles(root, config()), /unmanaged existing file/u);
+test("changed managed files and unmanaged workflows stop the whole transaction", async () => {
+    const root = await fixtureRoot("release-ops-conflict-");
+    await installProjectFiles(root, baseConfig({ sentry: true }));
+    const managed = join(root, ".github", "workflows", "sentry-issues.yml");
+    await writeFile(managed, "project-owned change\n", "utf8");
+    await assert.rejects(installProjectFiles(root, baseConfig({ sentry: false })), /Managed file conflicts/u);
+    assert.equal(await readFile(managed, "utf8"), "project-owned change\n");
+
+    const other = await fixtureRoot("release-ops-unmanaged-");
+    await mkdir(join(other, ".github", "workflows"), { recursive: true });
+    await writeFile(join(other, ".github", "workflows", "publish-release.yml"), "project-owned\n", "utf8");
+    await assert.rejects(installProjectFiles(other, baseConfig()), /Managed file conflicts/u);
 });

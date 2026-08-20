@@ -1,25 +1,58 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/wearshoes/release-ops/schemas/provider-v1.json",
-  "title": "Release Ops Provider v1",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/provider-v2.json",
+  "title": "Release Ops provider manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "category", "capabilities", "installed"],
+  "required": ["schemaVersion", "configSchemaVersion", "configSchema", "id", "category", "installed", "docs", "capabilities", "requiredSecrets", "runtimeFiles"],
   "properties": {
-    "schemaVersion": { "const": "release-ops/provider/v1" },
-    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "schemaVersion": { "const": "release-ops/provider/v2" },
+    "configSchemaVersion": { "type": "string", "pattern": "^release-ops/provider-config/[a-z0-9-]+/v[1-9][0-9]*$" },
+    "configSchema": { "$ref": "#/$defs/repositoryPath" },
+    "id": { "$ref": "#/$defs/id" },
     "category": { "enum": ["observability", "performance", "vulnerability", "quality"] },
     "installed": { "type": "boolean" },
+    "docs": { "$ref": "#/$defs/repositoryPath" },
     "capabilities": {
       "type": "array",
       "uniqueItems": true,
-      "items": {
-        "enum": ["configure", "audit", "requiredSecrets", "buildHooks", "scheduledIngest", "incidentIntake", "resolve"]
-      }
+      "items": { "enum": ["configure", "audit", "requiredSecrets", "buildHooks", "scheduledIngest", "incidentIntake", "resolve"] }
     },
     "requiredSecrets": {
       "type": "object",
-      "additionalProperties": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" }
+      "additionalProperties": { "$ref": "#/$defs/secretName" }
+    },
+    "runtimeFiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/repositoryPath" }
+    },
+    "buildHook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["script", "secretRole"],
+      "properties": {
+        "script": { "$ref": "#/$defs/repositoryPath" },
+        "secretRole": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}$" }
+      }
+    },
+    "managedFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "target"],
+        "properties": {
+          "source": { "$ref": "#/$defs/repositoryPath" },
+          "target": { "$ref": "#/$defs/repositoryPath" },
+          "requiresIssueSync": { "type": "boolean" }
+        }
+      }
     }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "secretName": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" },
+    "repositoryPath": { "type": "string", "pattern": "^(?![A-Za-z]:|/|.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$" }
   }
 }

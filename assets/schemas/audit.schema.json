@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/audit-v2.json",
+  "title": "Release Ops audit result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "success", "remoteVerified", "checks"],
+  "properties": {
+    "schemaVersion": { "const": "release-ops/audit/v2" },
+    "success": { "type": "boolean" },
+    "remoteVerified": { "type": "boolean" },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configuration", "managedFiles", "localBuild", "githubHosting", "releasePublication", "providers", "incidentResolution"],
+      "properties": {
+        "configuration": { "$ref": "#/$defs/check" },
+        "managedFiles": { "$ref": "#/$defs/check" },
+        "localBuild": { "$ref": "#/$defs/check" },
+        "githubHosting": { "$ref": "#/$defs/check" },
+        "releasePublication": { "$ref": "#/$defs/check" },
+        "providers": { "type": "object", "additionalProperties": { "$ref": "#/$defs/check" } },
+        "incidentResolution": { "$ref": "#/$defs/check" }
+      }
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["pass", "fail", "configured", "disabled", "not-applicable"] }
+      }
+    }
+  }
+}

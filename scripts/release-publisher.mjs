@@ -2,11 +2,12 @@
 
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig, RELEASE_SCHEMA } from "./config.mjs";
 import { createGitHubClient } from "./github-client.mjs";
+import { resolveRepositoryPath } from "./path-safety.mjs";
 
 function applyTemplate(template, values) {
     return template.replaceAll(/\{([A-Za-z][A-Za-z0-9]*)\}/gu, (match, key) => {
@@ -19,25 +20,49 @@ function jsonPath(value, path) {
     return path.split(".").reduce((current, key) => current?.[key], value);
 }
 
-export async function readCanonicalVersion(config, root) {
-    const path = resolve(root, config.versioning.file);
-    const text = await readFile(path, "utf8");
-    const reader = config.versioning.reader ?? "properties";
-    if (reader === "json") {
-        const parsed = JSON.parse(text);
-        return {
-            version: String(jsonPath(parsed, config.versioning.versionKey) ?? "").trim(),
-            versionCode: config.versioning.codeKey ? Number(jsonPath(parsed, config.versioning.codeKey)) : null,
-        };
-    }
-    const properties = new Map(text.split(/\r?\n/u).map((line) => {
+function parseProperties(text) {
+    return new Map(text.split(/\r?\n/u).map((line) => {
         const index = line.indexOf("=");
         return index < 0 ? [line.trim(), ""] : [line.slice(0, index).trim(), line.slice(index + 1).trim()];
     }));
-    return {
-        version: properties.get(config.versioning.versionKey) ?? "",
-        versionCode: config.versioning.codeKey ? Number(properties.get(config.versioning.codeKey)) : null,
-    };
+}
+
+function scalar(value) {
+    const text = String(value ?? "").trim().replace(/^['"]|['"]$/gu, "");
+    if (/^(?:0|[1-9]\d*)$/u.test(text)) return Number(text);
+    return text;
+}
+
+async function readVersionSource(root, source) {
+    const path = await resolveRepositoryPath(root, source.file, { name: `version source ${source.file}`, mustExist: true });
+    const text = await readUtf8(path);
+    if (["properties", "gradle-properties"].includes(source.reader)) return scalar(parseProperties(text).get(source.key));
+    if (["json", "package-json"].includes(source.reader)) return scalar(jsonPath(JSON.parse(text), source.key));
+    if (source.reader === "text") return scalar(text);
+    if (source.reader === "pubspec") {
+        const match = text.match(new RegExp(`^${source.key.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}:\\s*(.+)$`, "mu"));
+        if (!match) return "";
+        const value = scalar(match[1]);
+        if (source.key === "version" && typeof value === "string") return value.split("+")[0];
+        if (source.key === "build" && typeof value === "string") return scalar(value.split("+")[1]);
+        return value;
+    }
+    if (source.reader === "godot") {
+        const match = text.match(new RegExp(`^${source.key.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}=([^\\r\\n]+)$`, "mu"));
+        return scalar(match?.[1]);
+    }
+    if (source.reader === "unity") {
+        const match = text.match(new RegExp(`^\\s*${source.key.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}:\\s*(.+)$`, "mu"));
+        return scalar(match?.[1]);
+    }
+    throw new Error(`Unsupported version reader: ${source.reader}`);
+}
+
+export async function readCanonicalVersion(config, root) {
+    const version = String(await readVersionSource(root, config.versioning.canonical)).trim();
+    const buildNumbers = {};
+    for (const entry of config.versioning.buildNumbers ?? []) buildNumbers[entry.id] = await readVersionSource(root, entry.source);
+    return { version, buildNumbers };
 }
 
 async function readUtf8(path) {
@@ -46,36 +71,100 @@ async function readUtf8(path) {
     return decoded.charCodeAt(0) === 0xfeff ? decoded.slice(1) : decoded;
 }
 
-async function prepare(config, root, { version, versionCode, sourceSha, publishedAt }) {
+function assertVersion(version) {
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version)) throw new Error("Version must use semantic version format");
+}
+
+function sameBuildNumbers(actual, expected) {
+    return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+async function directArtifacts(config, root, values) {
+    const artifacts = [];
+    for (const unit of config.build.units) {
+        for (const declared of unit.artifacts) {
+            const path = await resolveRepositoryPath(root, applyTemplate(declared.path, values), {
+                name: `release artifact ${unit.id}/${declared.id}`,
+                mustExist: true,
+            });
+            if (!(await stat(path)).isFile()) throw new Error(`Release artifact is not a file: ${unit.id}/${declared.id}`);
+            const bytes = await readFile(path);
+            artifacts.push({
+                ...declared,
+                unit: unit.id,
+                sourcePath: path,
+                name: applyTemplate(declared.nameTemplate, values),
+                bytes,
+                size: bytes.length,
+                sha256: createHash("sha256").update(bytes).digest("hex"),
+            });
+        }
+    }
+    return artifacts;
+}
+
+async function aggregatedArtifacts(config, root, artifactRoot, canonical) {
+    const base = await resolveRepositoryPath(root, artifactRoot, { name: "aggregated artifact root", mustExist: true });
+    const artifacts = [];
+    for (const unit of config.build.units) {
+        const unitRoot = join(base, `release-ops-${unit.id}`);
+        const manifestPath = join(unitRoot, "manifest.json");
+        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        if (manifest.schemaVersion !== "release-ops-build-artifacts/v2" || manifest.unit !== unit.id
+            || manifest.version !== canonical.version || !sameBuildNumbers(manifest.buildNumbers, canonical.buildNumbers)) {
+            throw new Error(`Aggregated artifact manifest does not match build unit ${unit.id}`);
+        }
+        if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== unit.artifacts.length) {
+            throw new Error(`Aggregated artifact count does not match build unit ${unit.id}`);
+        }
+        for (const declared of unit.artifacts) {
+            const record = manifest.artifacts.find(({ id }) => id === declared.id);
+            if (!record || record.unit !== unit.id || record.contentType !== declared.contentType
+                || record.platform !== declared.platform || record.architecture !== declared.architecture
+                || basename(record.name ?? "") !== record.name) {
+                throw new Error(`Aggregated artifact metadata does not match ${unit.id}/${declared.id}`);
+            }
+            const sourcePath = join(unitRoot, record.name);
+            const bytes = await readFile(sourcePath);
+            const sha256 = createHash("sha256").update(bytes).digest("hex");
+            if (bytes.length !== record.size || sha256 !== record.sha256) throw new Error(`Aggregated artifact checksum failed: ${record.name}`);
+            artifacts.push({ ...declared, ...record, sourcePath, bytes });
+        }
+    }
+    return artifacts;
+}
+
+async function prepare(config, root, { version, buildNumbers, sourceSha, publishedAt, artifactRoot }) {
+    assertVersion(version);
     if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error("Source SHA must be a full lowercase commit SHA");
     const canonical = await readCanonicalVersion(config, root);
     if (canonical.version !== version) throw new Error("Canonical version does not match the release version");
-    if (config.versioning.codeKey && canonical.versionCode !== versionCode) throw new Error("Canonical version code does not match the release code");
-    const values = { version, versionCode };
-    const notesPath = resolve(root, applyTemplate(config.versioning.changelogPattern, values));
+    if (!sameBuildNumbers(canonical.buildNumbers, buildNumbers)) throw new Error("Canonical build numbers do not match the release inputs");
+    const values = { version, ...buildNumbers };
+    const notesPath = await resolveRepositoryPath(root, applyTemplate(config.versioning.changelogPattern, values), {
+        name: "release changelog",
+        mustExist: true,
+    });
     const notes = await readUtf8(notesPath);
     if (!notes.trim()) throw new Error("Release changelog is empty");
     if (config.versioning.requiresChinese && !/[\u3400-\u9fff]/u.test(notes)) throw new Error("Release changelog must contain Chinese");
     if (/\uFFFD|\?{2,}/u.test(notes)) throw new Error("Release changelog contains corrupted text");
-    const artifacts = [];
-    for (const declared of config.build.artifacts) {
-        const path = resolve(root, applyTemplate(declared.path, values));
-        const metadata = await stat(path);
-        if (!metadata.isFile()) throw new Error(`Release artifact is not a file: ${declared.id}`);
-        const bytes = await readFile(path);
-        artifacts.push({
-            ...declared,
-            sourcePath: path,
-            name: applyTemplate(declared.nameTemplate, values),
-            bytes,
-            size: bytes.length,
-            sha256: createHash("sha256").update(bytes).digest("hex"),
-        });
-    }
-    const tag = applyTemplate(config.release.tagTemplate, values);
-    const title = applyTemplate(config.release.titleTemplate, values);
-    return { version, versionCode, sourceSha, notesPath, notes, artifacts, tag, title, publishedAt, values };
+    const artifacts = artifactRoot
+        ? await aggregatedArtifacts(config, root, artifactRoot, canonical)
+        : await directArtifacts(config, root, values);
+    const names = artifacts.map(({ name }) => name);
+    if (new Set(names).size !== names.length) throw new Error("Release artifact names must be globally unique");
+    return {
+        version,
+        buildNumbers,
+        sourceSha,
+        notesPath,
+        notes,
+        artifacts,
+        tag: applyTemplate(config.release.tagTemplate, values),
+        title: applyTemplate(config.release.titleTemplate, values),
+        publishedAt,
+    };
 }
 
 function publicArtifact(artifact, repository, tag) {
@@ -93,6 +182,7 @@ export function createPublicManifest(config, prepared, repository) {
     return {
         schemaVersion: RELEASE_SCHEMA,
         version: prepared.version,
+        buildNumbers: prepared.buildNumbers,
         publishedAt: prepared.publishedAt,
         releaseUrl: `https://github.com/${repository}/releases/tag/${prepared.tag}`,
         artifacts: prepared.artifacts.map((artifact) => publicArtifact(artifact, repository, prepared.tag)),
@@ -102,9 +192,10 @@ export function createPublicManifest(config, prepared, repository) {
 function createLatest(config, prepared, manifest) {
     if (config.release.latestCompatibility === "android-version-code-v1") {
         const primary = manifest.artifacts[0];
-        if (!Number.isSafeInteger(prepared.versionCode) || !primary) throw new Error("Android latest manifest requires a version code and primary artifact");
+        const code = prepared.buildNumbers[config.release.latestBuildNumberId];
+        if (!Number.isSafeInteger(code) || !primary) throw new Error("Android latest manifest requires an integer build number and primary artifact");
         return {
-            versionCode: prepared.versionCode,
+            versionCode: code,
             versionName: prepared.version,
             minimumSupportedVersionCode: config.release.minimumSupportedVersionCode ?? 1,
             apkUrl: primary.downloadUrl,
@@ -131,9 +222,12 @@ async function ensureDraft(github, repository, prepared, targetCommitish) {
         if (existing.body !== prepared.notes || existing.name !== prepared.title) {
             throw new Error(`Existing ${repository} Release does not match the changelog and title`);
         }
+        if (existing.target_commitish && existing.target_commitish !== targetCommitish) {
+            throw new Error(`Existing ${repository} Release is bound to a different target`);
+        }
         return existing;
     }
-    const response = await github.request(`/repos/${repository}/releases`, {
+    return (await github.request(`/repos/${repository}/releases`, {
         method: "POST",
         json: {
             tag_name: prepared.tag,
@@ -143,15 +237,12 @@ async function ensureDraft(github, repository, prepared, targetCommitish) {
             draft: true,
             prerelease: false,
         },
-    });
-    return response.data;
+    })).data;
 }
 
 async function replaceAsset(github, repository, release, asset) {
     for (const existing of release.assets ?? []) {
-        if (existing?.name === asset.name) {
-            await github.request(`/repos/${repository}/releases/assets/${existing.id}`, { method: "DELETE" });
-        }
+        if (existing?.name === asset.name) await github.request(`/repos/${repository}/releases/assets/${existing.id}`, { method: "DELETE" });
     }
     await github.request(`/repos/${repository}/releases/${release.id}/assets?name=${encodeURIComponent(asset.name)}`, {
         method: "POST",
@@ -185,80 +276,101 @@ async function publishDraft(github, repository, release) {
 }
 
 function jsonAsset(name, value) {
-    return {
-        name,
-        bytes: Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8"),
-        contentType: "application/json; charset=utf-8",
-    };
+    return { name, bytes: Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8"), contentType: "application/json; charset=utf-8" };
 }
 
 async function publishLocal(config, root, prepared) {
-    const outputRoot = resolve(root, config.release.localOutputDirectory ?? "dist/release-ops", prepared.tag);
+    const relative = join(config.release.localOutputDirectory, prepared.tag).replaceAll("\\", "/");
+    const outputRoot = await resolveRepositoryPath(root, relative, { name: "local release output" });
     await mkdir(outputRoot, { recursive: true });
     const manifest = {
         schemaVersion: RELEASE_SCHEMA,
         version: prepared.version,
+        buildNumbers: prepared.buildNumbers,
         publishedAt: prepared.publishedAt,
         artifacts: prepared.artifacts.map(({ name, platform, architecture, size, sha256 }) => ({ name, platform, architecture, size, sha256 })),
     };
     for (const artifact of prepared.artifacts) await copyFile(artifact.sourcePath, join(outputRoot, artifact.name));
     await writeFile(join(outputRoot, "release-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     await writeFile(join(outputRoot, "CHANGELOG.md"), prepared.notes, "utf8");
-    return { schemaVersion: "release-ops-publish-result/v1", mode: "local", version: prepared.version, outputRoot, manifest };
+    return { schemaVersion: "release-ops-publish-result/v2", mode: "local", version: prepared.version, outputRoot, manifest };
 }
 
-export async function publishRelease({ config, root = process.cwd(), version, versionCode = null, sourceSha, github, publishedAt = new Date().toISOString().replace(/\.\d{3}Z$/u, "Z") }) {
-    for (const name of config.build.requiredSecretNames ?? []) {
-        if (!process.env[name]) throw new Error(`Required build Secret metadata is missing from the environment: ${name}`);
+export async function publishRelease({
+    config,
+    root = process.cwd(),
+    version,
+    buildNumbers = {},
+    sourceSha,
+    github,
+    artifactRoot = null,
+    correlation = null,
+    publishedAt = new Date().toISOString().replace(/\.\d{3}Z$/u, "Z"),
+}) {
+    if (correlation !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(correlation)) {
+        throw new Error("Release correlation must be a UUID v4");
     }
-    const prepared = await prepare(config, root, { version, versionCode, sourceSha, publishedAt });
+    const prepared = await prepare(config, root, { version, buildNumbers, sourceSha, publishedAt, artifactRoot });
     if (!config.hosting.github.enabled) return publishLocal(config, root, prepared);
     if (!github) throw new Error("A GitHub client is required for GitHub publication");
-    const sourceRepository = config.hosting.github.sourceRepository;
-    const publicRepository = config.hosting.github.releaseMode === "dual-repository"
-        ? config.hosting.github.publicRepository
-        : sourceRepository;
-    const publicManifest = createPublicManifest(config, prepared, publicRepository);
+    const source = config.hosting.github.source;
+    const distribution = config.hosting.github.releaseMode === "dual-repository"
+        ? config.hosting.github.distribution
+        : source;
+    const publicManifest = createPublicManifest(config, prepared, distribution.repository);
     const latest = createLatest(config, prepared, publicManifest);
-    const sharedAssets = [
-        ...prepared.artifacts,
-        jsonAsset("release-manifest.json", publicManifest),
-        jsonAsset("latest.json", latest),
-    ];
-    const sourceRelease = await ensureDraft(github, sourceRepository, prepared, sourceSha);
-    const publicRelease = publicRepository === sourceRepository
+    const sharedAssets = [...prepared.artifacts, jsonAsset("release-manifest.json", publicManifest), jsonAsset("latest.json", latest)];
+    const sourceRelease = await ensureDraft(github, source.repository, prepared, sourceSha);
+    const publicRelease = distribution.repository === source.repository
         ? sourceRelease
-        : await ensureDraft(github, publicRepository, prepared, config.hosting.github.defaultBranch);
-    for (const asset of sharedAssets) await replaceAsset(github, sourceRepository, sourceRelease, asset);
-    if (publicRepository !== sourceRepository) {
-        for (const asset of sharedAssets) await replaceAsset(github, publicRepository, publicRelease, asset);
+        : await ensureDraft(github, distribution.repository, prepared, distribution.defaultBranch);
+    for (const asset of sharedAssets) await replaceAsset(github, source.repository, sourceRelease, asset);
+    if (distribution.repository !== source.repository) {
+        for (const asset of sharedAssets) await replaceAsset(github, distribution.repository, publicRelease, asset);
     }
-    const branch = config.hosting.github.defaultBranch;
     await putRepositoryFile(
         github,
-        publicRepository,
-        branch,
+        distribution.repository,
+        distribution.defaultBranch,
         config.release.latestManifest,
         `${JSON.stringify(latest, null, 2)}\n`,
         `release: ${prepared.tag}`,
     );
     if (config.release.publicReadmeSource && config.release.publicReadmeTarget) {
-        const readme = await readUtf8(resolve(root, config.release.publicReadmeSource));
-        await putRepositoryFile(github, publicRepository, branch, config.release.publicReadmeTarget, readme, `docs: synchronize release README for ${prepared.tag}`);
+        const readmePath = await resolveRepositoryPath(root, config.release.publicReadmeSource, { name: "public README", mustExist: true });
+        await putRepositoryFile(
+            github,
+            distribution.repository,
+            distribution.defaultBranch,
+            config.release.publicReadmeTarget,
+            await readUtf8(readmePath),
+            `docs: synchronize release README for ${prepared.tag}`,
+        );
     }
-    const publishedSource = await publishDraft(github, sourceRepository, sourceRelease);
-    const publishedPublic = publicRepository === sourceRepository
+    const publishedSource = await publishDraft(github, source.repository, sourceRelease);
+    const publishedPublic = distribution.repository === source.repository
         ? publishedSource
-        : await publishDraft(github, publicRepository, publicRelease);
+        : await publishDraft(github, distribution.repository, publicRelease);
     return {
-        schemaVersion: "release-ops-publish-result/v1",
+        schemaVersion: "release-ops-publish-result/v2",
         mode: config.hosting.github.releaseMode,
         version: prepared.version,
         tag: prepared.tag,
         manifest: publicManifest,
         sourceReleaseUrl: publishedSource.html_url,
         publicReleaseUrl: publishedPublic.html_url,
+        correlation,
     };
+}
+
+function parseJsonArgument(value, name) {
+    try {
+        const parsed = JSON.parse(value ?? "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+        return parsed;
+    } catch (error) {
+        throw new Error(`${name} must be a JSON object`, { cause: error });
+    }
 }
 
 async function main() {
@@ -276,8 +388,8 @@ async function main() {
         const sourceToken = process.env.GITHUB_TOKEN ?? process.env.github_token;
         const publicToken = config.hosting.github.releaseMode === "dual-repository" ? process.env.RELEASE_REPO_TOKEN : sourceToken;
         github = createGitHubClient({
-            sourceRepository: config.hosting.github.sourceRepository,
-            publicRepository: config.hosting.github.publicRepository,
+            sourceRepository: config.hosting.github.source.repository,
+            publicRepository: config.hosting.github.distribution?.repository,
             sourceToken,
             publicToken,
         });
@@ -286,8 +398,10 @@ async function main() {
         config,
         root,
         version: args.get("--version") ?? "",
-        versionCode: args.has("--code") && args.get("--code") !== "" ? Number(args.get("--code")) : null,
+        buildNumbers: parseJsonArgument(args.get("--build-numbers"), "--build-numbers"),
         sourceSha: args.get("--sha") ?? "",
+        artifactRoot: args.get("--artifact-root") ?? null,
+        correlation: args.get("--correlation") ?? null,
         github,
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

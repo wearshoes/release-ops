@@ -1,27 +1,30 @@
 #!/usr/bin/env node
 
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.mjs";
 import { readCanonicalVersion } from "./release-publisher.mjs";
+import { resolveRepositoryPath } from "./path-safety.mjs";
 
 function applyTemplate(template, version) {
     return template.replaceAll("{version}", version);
 }
 
-export async function preflightRelease(config, { root = process.cwd(), version, versionCode = null, sourceSha }) {
+export async function preflightRelease(config, { root = process.cwd(), version, buildNumbers = {}, sourceSha }) {
     if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error("Source SHA must be a full lowercase commit SHA");
     const canonical = await readCanonicalVersion(config, root);
     if (canonical.version !== version) throw new Error("Canonical version does not match the requested release");
-    if (config.versioning.codeKey && canonical.versionCode !== versionCode) throw new Error("Canonical version code does not match the requested release");
-    const changelog = resolve(root, applyTemplate(config.versioning.changelogPattern, version));
-    await access(changelog);
+    if (JSON.stringify(canonical.buildNumbers) !== JSON.stringify(buildNumbers)) throw new Error("Canonical build numbers do not match the requested release");
+    const changelog = await resolveRepositoryPath(root, applyTemplate(config.versioning.changelogPattern, version), {
+        name: "release changelog",
+        mustExist: true,
+    });
     const text = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(changelog));
     if (!text.trim()) throw new Error("Release changelog is empty");
     if (config.versioning.requiresChinese && !/[\u3400-\u9fff]/u.test(text)) throw new Error("Release changelog must contain Chinese");
-    return { schemaVersion: "release-ops-preflight/v1", success: true, version, versionCode, sourceSha, changelog };
+    return { schemaVersion: "release-ops-preflight/v2", success: true, version, buildNumbers, sourceSha, changelog };
 }
 
 async function main() {
@@ -36,7 +39,7 @@ async function main() {
     const result = await preflightRelease(await loadConfig(root), {
         root,
         version: args.get("--version") ?? "",
-        versionCode: args.has("--code") && args.get("--code") !== "" ? Number(args.get("--code")) : null,
+        buildNumbers: JSON.parse(args.get("--build-numbers") ?? "{}"),
         sourceSha: args.get("--sha") ?? "",
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

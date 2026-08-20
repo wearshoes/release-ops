@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "release-ops/provider/v2",
+  "configSchemaVersion": "release-ops/provider-config/sentry/v1",
+  "configSchema": "config.schema.json",
+  "id": "sentry",
+  "category": "observability",
+  "installed": true,
+  "docs": "docs/providers/sentry.md",
+  "capabilities": ["configure", "audit", "requiredSecrets", "buildHooks", "scheduledIngest", "incidentIntake", "resolve"],
+  "requiredSecrets": {
+    "projectProvision": "SENTRY_PROJECT_ADMIN_TOKEN",
+    "buildUpload": "SENTRY_ORG_CI_TOKEN",
+    "incidentRead": "SENTRY_AUTH_TOKEN",
+    "incidentWrite": "SENTRY_WRITE_TOKEN"
+  },
+  "runtimeFiles": ["sentry-build-hook.mjs", "sentry-client.mjs", "sentry-incidents.mjs", "sentry-sync.mjs", "sentry-intake.mjs", "sentry-resolver.mjs"],
+  "buildHook": {
+    "script": "sentry-build-hook.mjs",
+    "secretRole": "buildUpload"
+  },
+  "managedFiles": [
+    {
+      "source": "templates/sentry-issues.yml",
+      "target": ".github/workflows/sentry-issues.yml",
+      "requiresIssueSync": true
+    },
+    {
+      "source": "templates/resolve-issues.yml",
+      "target": ".github/workflows/resolve-issues.yml",
+      "requiresIssueSync": true
+    }
+  ]
+}

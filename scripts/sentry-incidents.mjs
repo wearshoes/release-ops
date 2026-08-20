@@ -1,8 +1,8 @@
 import { basename } from "node:path";
 
-export const INCIDENT_SCHEMA = "release-ops-sentry-incident/v1";
-const MARKER_PATTERN = /<!-- release-ops-sentry:v1 project=([A-Za-z0-9_-]+) issue_id=(\d+) -->/u;
-const RECORD_PATTERN = /<!-- release-ops-sentry-record:v1 ([A-Za-z0-9_-]{10,20000}) -->/u;
+export const INCIDENT_SCHEMA = "release-ops-sentry-incident/v2";
+const MARKER_PATTERN = /<!-- release-ops-sentry:v2 project=([A-Za-z0-9_-]+) issue_id=(\d+) -->/u;
+const RECORD_PATTERN = /<!-- release-ops-sentry-record:v2 ([A-Za-z0-9_-]{10,20000}) -->/u;
 
 function bounded(value, length = 160) {
     const normalized = String(value ?? "").replaceAll(/[\u0000-\u001f\u007f]/gu, " ").replaceAll(/\s+/gu, " ").trim();
@@ -70,11 +70,11 @@ export function sanitizeSentryIncident(group, event, { project, host }) {
 
 export function incidentMarker(project, issueId) {
     if (!/^[A-Za-z0-9_-]+$/u.test(project) || !/^\d+$/u.test(String(issueId))) throw new Error("Incident marker identity is invalid");
-    return `<!-- release-ops-sentry:v1 project=${project} issue_id=${issueId} -->`;
+    return `<!-- release-ops-sentry:v2 project=${project} issue_id=${issueId} -->`;
 }
 
 export function recordMarker(incident) {
-    return `<!-- release-ops-sentry-record:v1 ${Buffer.from(JSON.stringify(incident), "utf8").toString("base64url")} -->`;
+    return `<!-- release-ops-sentry-record:v2 ${Buffer.from(JSON.stringify(incident), "utf8").toString("base64url")} -->`;
 }
 
 export function parseIncidentBody(body) {
@@ -152,9 +152,10 @@ export async function syncSentryIncidents({ config, sentry, github }) {
     if (!provider.enabled || !provider.issueSync || !config.hosting.github.enabled) {
         throw new Error("Sentry-to-GitHub synchronization is disabled");
     }
-    const repository = config.hosting.github.sourceRepository;
+    const repository = config.hosting.github.source.repository;
     await ensureLabels(github, repository);
-    const groups = (await sentry.request(`/organizations/${provider.organization}/issues/?project=${encodeURIComponent(provider.project)}&query=is%3Aunresolved`)).data;
+    const issuePath = `/organizations/${provider.organization}/issues/?project=${encodeURIComponent(provider.project)}&query=is%3Aunresolved&sort=date&statsPeriod=${provider.lookbackMinutes}m`;
+    const groups = sentry.paginate ? await sentry.paginate(issuePath) : (await sentry.request(issuePath)).data;
     if (!Array.isArray(groups)) throw new Error("Sentry returned an invalid Issue list");
     const existing = await allManagedIssues(github, repository);
     const seen = new Set();
@@ -162,7 +163,7 @@ export async function syncSentryIncidents({ config, sentry, github }) {
     let updated = 0;
     for (const group of groups) {
         const event = (await sentry.request(`/issues/${group.id}/events/latest/`)).data;
-        const incident = sanitizeSentryIncident(group, event, { project: provider.project, host: provider.host });
+        const incident = sanitizeSentryIncident(group, event, { project: provider.project, host: new URL(provider.apiBase).hostname });
         const key = `${incident.project}:${incident.issueId}`;
         seen.add(key);
         const rendered = renderIncident(incident);
@@ -187,7 +188,7 @@ export async function syncSentryIncidents({ config, sentry, github }) {
             await github.request(`/repos/${repository}/issues/${issue.number}`, { method: "PATCH", json: { state: "closed" } });
         }
     }
-    return { schemaVersion: "release-ops-sentry-sync/v1", repository, created, updated };
+    return { schemaVersion: "release-ops-sentry-sync/v2", repository, lookbackMinutes: provider.lookbackMinutes, created, updated };
 }
 
 export async function resolveSentryIncident({ config, issue, commitSha, sentryRead, sentryWrite, github }) {
@@ -200,12 +201,29 @@ export async function resolveSentryIncident({ config, issue, commitSha, sentryRe
     if (String(group?.id) !== incident.issueId || group?.project?.slug !== provider.project) throw new Error("Sentry group identity does not match the GitHub Issue");
     const event = (await sentryRead.request(`/issues/${incident.issueId}/events/latest/`)).data;
     if (String(event?.eventID ?? event?.event_id ?? event?.id) !== incident.eventId) throw new Error("Sentry occurrence changed after GitHub intake");
-    await sentryWrite.request(path, { method: "PUT", json: { status: "resolved" } });
-    const repository = config.hosting.github.sourceRepository;
-    await github.request(`/repos/${repository}/issues/${issue.number}/comments`, {
-        method: "POST",
-        json: { body: `Resolved by commit https://github.com/${repository}/commit/${commitSha}` },
-    });
-    await github.request(`/repos/${repository}/issues/${issue.number}`, { method: "PATCH", json: { state: "closed" } });
-    return { schemaVersion: "release-ops-sentry-resolution/v1", issueNumber: issue.number, issueId: incident.issueId, resolved: true };
+    const repository = config.hosting.github.source.repository;
+    const markerBase = `release-ops-sentry-resolve:v2 issue_id=${incident.issueId} commit=${commitSha}`;
+    const commentsResponse = await github.request(`/repos/${repository}/issues/${issue.number}/comments?per_page=100`);
+    const comments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
+    const hasStart = comments.some(({ body }) => String(body).includes(`<!-- ${markerBase} state=start -->`));
+    const hasApplied = comments.some(({ body }) => String(body).includes(`<!-- ${markerBase} state=applied -->`));
+    if (!hasStart) {
+        await github.request(`/repos/${repository}/issues/${issue.number}/comments`, {
+            method: "POST",
+            json: { body: `<!-- ${markerBase} state=start -->\nResolution started for the explicitly bound commit.` },
+        });
+    }
+    if (hasStart && !hasApplied && group?.status !== "resolved") {
+        throw new Error("SENTRY_WRITE_UNCERTAIN: an earlier write may have been accepted; manual reconciliation is required");
+    }
+    if (!hasApplied && group?.status !== "resolved") {
+        await sentryWrite.request(path, { method: "PUT", json: { status: "resolved" } });
+    }
+    if (!hasApplied) {
+        await github.request(`/repos/${repository}/issues/${issue.number}/comments`, {
+            method: "POST",
+            json: { body: `<!-- ${markerBase} state=applied -->\nSentry accepted the resolved transition.` },
+        });
+    }
+    return { schemaVersion: "release-ops-sentry-resolution/v2", issueNumber: issue.number, issueId: incident.issueId, resolved: true };
 }

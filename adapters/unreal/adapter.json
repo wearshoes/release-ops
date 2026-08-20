@@ -1,0 +1,1 @@
+{"schemaVersion":"release-ops/adapter/v2","id":"unreal","status":"unsupported","docs":"docs/stacks/unreal.md","detects":["*.uproject"],"artifactTypes":[],"debugArtifactTypes":[],"targets":[]}

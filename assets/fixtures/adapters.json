@@ -1,16 +1,16 @@
 {
-  "schemaVersion": "release-ops-adapter-fixtures/v1",
+  "schemaVersion": "release-ops-adapter-fixtures/v2",
   "fixtures": [
-    { "adapter": "android-gradle", "files": ["gradlew", "app/build.gradle.kts"], "debugArtifactTypes": ["proguard", "dif"] },
-    { "adapter": "apple-xcode", "files": ["Example.xcodeproj"], "debugArtifactTypes": ["dif"] },
-    { "adapter": "javascript", "files": ["package.json"], "debugArtifactTypes": ["source-map"] },
-    { "adapter": "dotnet", "files": ["Example.sln", "Example.csproj"], "debugArtifactTypes": ["dif"] },
-    { "adapter": "native", "files": ["CMakeLists.txt"], "debugArtifactTypes": ["dif"] },
-    { "adapter": "flutter", "files": ["pubspec.yaml"], "debugArtifactTypes": ["dart-symbol", "source-map", "dif"] },
-    { "adapter": "react-native", "files": ["package.json", "android/build.gradle"], "debugArtifactTypes": ["source-map", "proguard", "dif"] },
-    { "adapter": "unity", "files": ["ProjectSettings/ProjectVersion.txt"], "debugArtifactTypes": ["source-map", "proguard", "dif"] },
-    { "adapter": "godot", "files": ["project.godot"], "debugArtifactTypes": ["source-map", "dif"] },
-    { "adapter": "unreal", "files": ["Example.uproject"], "debugArtifactTypes": ["dif"] },
-    { "adapter": "generic", "files": ["release-ops.json"], "debugArtifactTypes": [] }
+    { "adapter": "android-gradle", "files": ["gradlew", "app/build.gradle.kts"], "status": "supported", "targets": { "android": "ubuntu-latest" } },
+    { "adapter": "apple-xcode", "files": ["Example.xcodeproj"], "status": "supported", "targets": { "macos": "macos-latest", "ios": "macos-latest" } },
+    { "adapter": "javascript", "files": ["package.json"], "status": "supported", "targets": { "web": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "adapter": "dotnet", "files": ["Example.sln"], "status": "supported", "targets": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "adapter": "native", "files": ["CMakeLists.txt"], "status": "supported", "targets": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "adapter": "flutter", "files": ["pubspec.yaml"], "status": "supported", "targets": { "android": "ubuntu-latest", "windows": "windows-latest", "ios": "macos-latest" } },
+    { "adapter": "react-native", "files": ["package.json", "android/settings.gradle"], "status": "supported", "targets": { "android": "ubuntu-latest", "ios": "macos-latest" } },
+    { "adapter": "godot", "files": ["project.godot"], "status": "supported", "targets": { "linux": "ubuntu-latest", "web": "ubuntu-latest", "android": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest", "ios": "macos-latest" } },
+    { "adapter": "unity", "files": ["ProjectSettings/ProjectVersion.txt"], "status": "credential-gated", "targets": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "adapter": "generic", "files": [], "status": "supported", "targets": {} },
+    { "adapter": "unreal", "files": ["Example.uproject"], "status": "unsupported", "targets": {} }
   ]
 }

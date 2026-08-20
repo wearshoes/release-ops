@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/config-v2.json",
+  "title": "Release Ops configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "project", "build", "versioning", "hosting", "release", "providers"],
+  "properties": {
+    "schemaVersion": { "const": "release-ops/config/v2" },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "adapter"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "adapter": { "$ref": "#/$defs/id" },
+        "adapterOptions": { "type": "object" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["units"],
+      "properties": {
+        "units": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/buildUnit" } }
+      }
+    },
+    "versioning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical", "buildNumbers", "changelogPattern", "requiresChinese"],
+      "properties": {
+        "canonical": { "$ref": "#/$defs/versionSource" },
+        "buildNumbers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "source"],
+            "properties": { "id": { "$ref": "#/$defs/id" }, "source": { "$ref": "#/$defs/versionSource" } }
+          }
+        },
+        "changelogPattern": { "$ref": "#/$defs/repositoryPath" },
+        "requiresChinese": { "type": "boolean" }
+      }
+    },
+    "hosting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["github"],
+      "properties": {
+        "github": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "source", "distribution", "releaseMode"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "source": { "oneOf": [{ "$ref": "#/$defs/repositoryIdentity" }, { "type": "null" }] },
+            "distribution": { "oneOf": [{ "$ref": "#/$defs/repositoryIdentity" }, { "type": "null" }] },
+            "releaseMode": { "enum": ["local", "same-repository", "dual-repository"] }
+          }
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflowFile", "tagTemplate", "titleTemplate", "manifestSchema", "publicReadmeSource", "publicReadmeTarget", "latestManifest", "latestCompatibility", "localOutputDirectory"],
+      "properties": {
+        "workflowFile": { "$ref": "#/$defs/repositoryPath" },
+        "tagTemplate": { "type": "string", "minLength": 1 },
+        "titleTemplate": { "type": "string", "minLength": 1 },
+        "manifestSchema": { "const": "release-ops-release/v2" },
+        "publicReadmeSource": { "oneOf": [{ "$ref": "#/$defs/repositoryPath" }, { "type": "null" }] },
+        "publicReadmeTarget": { "oneOf": [{ "$ref": "#/$defs/repositoryPath" }, { "type": "null" }] },
+        "latestManifest": { "$ref": "#/$defs/repositoryPath" },
+        "latestCompatibility": { "enum": ["release-ops", "android-version-code-v1"] },
+        "latestBuildNumberId": { "$ref": "#/$defs/id" },
+        "minimumSupportedVersionCode": { "type": "integer", "minimum": 1 },
+        "localOutputDirectory": { "$ref": "#/$defs/repositoryPath" }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/providerConfig" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "secretName": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" },
+    "repositoryPath": { "type": "string", "pattern": "^(?![A-Za-z]:|/|.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$" },
+    "runner": { "type": "string", "pattern": "^(?:(ubuntu|windows|macos)-(latest|[0-9]+(?:\\.[0-9]+)?)|self-hosted)$" },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "args"],
+      "properties": {
+        "executable": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "nameTemplate", "contentType", "platform", "architecture"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "path": { "$ref": "#/$defs/repositoryPath" },
+        "nameTemplate": { "type": "string", "minLength": 1 },
+        "contentType": { "type": "string", "minLength": 1 },
+        "platform": { "type": "string", "minLength": 1 },
+        "architecture": { "type": "string", "minLength": 1 }
+      }
+    },
+    "buildUnit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "target", "runner", "requiredSecretNames", "artifacts"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "target": { "$ref": "#/$defs/id" },
+        "runner": { "$ref": "#/$defs/runner" },
+        "selfHostedReason": { "type": "string", "minLength": 1 },
+        "command": { "$ref": "#/$defs/command" },
+        "requiredSecretNames": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/secretName" } },
+        "artifacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } }
+      }
+    },
+    "versionSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "reader", "key"],
+      "properties": {
+        "file": { "$ref": "#/$defs/repositoryPath" },
+        "reader": { "enum": ["properties", "json", "text", "gradle-properties", "package-json", "pubspec", "godot", "unity"] },
+        "key": { "type": "string", "minLength": 1 }
+      }
+    },
+    "repositoryIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "owner", "name", "visibility", "defaultBranch"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "owner": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+        "visibility": { "enum": ["private", "public"] },
+        "defaultBranch": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+$" }
+      }
+    },
+    "providerConfig": {
+      "type": "object",
+      "required": ["schemaVersion", "enabled"],
+      "properties": {
+        "schemaVersion": { "type": "string", "pattern": "^release-ops/provider-config/[a-z0-9-]+/v[1-9][0-9]*$" },
+        "enabled": { "type": "boolean" }
+      }
+    }
+  }
+}

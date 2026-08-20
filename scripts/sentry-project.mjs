@@ -8,8 +8,8 @@ const RETRIES = 3;
 
 function usage() {
     return `Usage:
-  node scripts/sentry-project.mjs inspect --org <slug> --team <slug> --slug <project-slug>
-  node scripts/sentry-project.mjs create --org <slug> --team <slug> --name <name> --slug <project-slug> --platform <platform> [--dry-run | --confirm-slug <project-slug>]
+  node scripts/sentry-project.mjs inspect --org <slug> --team <slug> --slug <project-slug> [--api-base <https-url>]
+  node scripts/sentry-project.mjs create --org <slug> --team <slug> --name <name> --slug <project-slug> --platform <platform> [--api-base <https-url>] [--dry-run | --confirm-slug <project-slug>]
 
 Credential:
   SENTRY_PROJECT_ADMIN_TOKEN`;
@@ -59,21 +59,30 @@ function validatePlatform(value) {
     return value;
 }
 
+function validateApiBase(value) {
+    const url = new URL(value ?? API_BASE);
+    if (url.protocol !== "https:" || !url.pathname.replace(/\/$/u, "").endsWith("/api/0") || url.search || url.hash) {
+        throw new Error("--api-base must be an HTTPS /api/0 endpoint");
+    }
+    return url.toString();
+}
+
 export function parseArguments(values) {
     if (values.length === 0 || values.includes("--help") || values.includes("-h")) return { help: true };
     const command = values[0];
     if (!["inspect", "create"].includes(command)) throw new Error(`Unknown command: ${command}`);
     const args = parsePairs(values.slice(1));
     const allowed = command === "inspect"
-        ? new Set(["--org", "--team", "--slug"])
-        : new Set(["--org", "--team", "--name", "--slug", "--platform", "--dry-run", "--confirm-slug"]);
+        ? new Set(["--org", "--team", "--slug", "--api-base"])
+        : new Set(["--org", "--team", "--name", "--slug", "--platform", "--api-base", "--dry-run", "--confirm-slug"]);
     for (const key of args.keys()) {
         if (!allowed.has(key)) throw new Error(`Unknown argument: ${key}`);
     }
     const org = validateSlug(requireValue(args, "--org"), "--org");
     const team = validateSlug(requireValue(args, "--team"), "--team");
     const slug = validateSlug(requireValue(args, "--slug"), "--slug");
-    if (command === "inspect") return { command, org, team, slug };
+    const apiBase = validateApiBase(args.get("--api-base"));
+    if (command === "inspect") return { command, org, team, slug, apiBase };
 
     const dryRun = args.get("--dry-run") === true;
     const name = validateName(requireValue(args, "--name"));
@@ -82,7 +91,7 @@ export function parseArguments(values) {
     if (!dryRun && confirmSlug !== slug) {
         throw new Error("Creation requires --confirm-slug to exactly match --slug");
     }
-    return { command, org, team, name, slug, platform, dryRun };
+    return { command, org, team, name, slug, platform, dryRun, apiBase };
 }
 
 function apiPath(parts) {
@@ -159,7 +168,7 @@ function sanitizedProject(project, fallback) {
 
 export async function provisionProject(options, dependencies = {}) {
     const fetchImpl = dependencies.fetchImpl ?? globalThis.fetch;
-    const baseUrl = dependencies.baseUrl ?? API_BASE;
+    const baseUrl = dependencies.baseUrl ?? options.apiBase ?? API_BASE;
     const token = dependencies.token;
     if (typeof token !== "string" || token.trim() === "") throw new Error("SENTRY_PROJECT_ADMIN_TOKEN is required");
     const teamPath = `teams/${apiPath([options.org, options.team])}/`;

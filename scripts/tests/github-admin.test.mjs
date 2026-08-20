@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRepository, inspectRepository, listSecretMetadata } from "../github-admin.mjs";
+import { createRepository, ensureDistributionReadme, inspectRepository, listSecretMetadata } from "../github-admin.mjs";
 
 function repository(overrides = {}) {
     return {
@@ -21,6 +21,8 @@ test("inspect returns only trusted repository metadata", async () => {
         schemaVersion: "release-ops-github-repository/v1",
         exists: true,
         repository: "wearshoes/example",
+        owner: "wearshoes",
+        name: "example",
         visibility: "private",
         defaultBranch: "main",
         archived: false,
@@ -54,6 +56,53 @@ test("repository creation verifies visibility and exact confirmation", async () 
     });
     assert.equal(result.created, true);
     assert.deepEqual(writes, [{ name: "example", private: true, has_issues: true, auto_init: false }]);
+});
+
+test("a new public distribution repository can be initialized before managed README updates", async () => {
+    const writes = [];
+    const github = {
+        request: async (path, options = {}) => {
+            if (path === "/repos/wearshoes/example-releases") return { data: null };
+            if (path === "/user") return { data: { login: "wearshoes" } };
+            if (path === "/user/repos" && options.method === "POST") {
+                writes.push(options.json);
+                return { data: repository({ full_name: "wearshoes/example-releases", visibility: "public", private: false }) };
+            }
+            throw new Error(`unexpected ${path}`);
+        },
+    };
+    await createRepository({
+        github,
+        repository: "wearshoes/example-releases",
+        visibility: "public",
+        confirmation: "wearshoes/example-releases:public",
+        dryRun: false,
+        initialize: true,
+    });
+    assert.equal(writes[0].auto_init, true);
+});
+
+test("distribution README initialization is marked, idempotent, and preserves project-owned content", async () => {
+    const writes = [];
+    let content = Buffer.from("# example-releases\n", "utf8").toString("base64");
+    const github = { request: async (path, options = {}) => {
+        if (options.method === "PUT") {
+            writes.push(options.json);
+            content = options.json.content;
+            return { data: { content: { sha: "new" } } };
+        }
+        return { data: { sha: "old", encoding: "base64", content } };
+    } };
+    const input = { github, repository: "wearshoes/example-releases", branch: "main", projectName: "Example" };
+    assert.equal((await ensureDistributionReadme(input)).updated, true);
+    assert.equal((await ensureDistributionReadme(input)).updated, false);
+    assert.equal(writes.length, 1);
+    assert.match(Buffer.from(content, "base64").toString("utf8"), /release-ops-managed-distribution-readme:v2/u);
+
+    const projectOwned = { request: async () => ({ data: {
+        sha: "manual", encoding: "base64", content: Buffer.from("# Manual\n", "utf8").toString("base64"),
+    } }) };
+    await assert.rejects(ensureDistributionReadme({ ...input, github: projectOwned }), /project-owned/u);
 });
 
 test("existing repository visibility cannot be silently changed", async () => {

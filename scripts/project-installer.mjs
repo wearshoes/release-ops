@@ -1,75 +1,290 @@
-import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ADAPTERS, PROVIDERS } from "./provider-registry.mjs";
+import { resolveRepositoryPath } from "./path-safety.mjs";
+
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const RUNTIME_FILES = [
+const CORE_RUNTIME_FILES = [
     "config.mjs",
     "provider-registry.mjs",
+    "path-safety.mjs",
     "github-client.mjs",
     "release-publisher.mjs",
     "preflight-release.mjs",
     "run-build.mjs",
+    "collect-artifacts.mjs",
     "local-release.mjs",
     "release-entry.mjs",
     "dispatch-release.mjs",
     "workflow-dispatch.mjs",
     "github-admin.mjs",
-    "sentry-build-hook.mjs",
-    "sentry-client.mjs",
-    "sentry-incidents.mjs",
-    "sentry-sync.mjs",
-    "sentry-intake.mjs",
-    "sentry-resolver.mjs",
 ];
+
+const ACTIONS = Object.freeze({
+    checkout: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262", // v4
+    node: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020", // v4
+    java: "actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3", // v4
+    dotnet: "actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9", // v4
+    flutter: "subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2", // v2
+    godot: "chickensoft-games/setup-godot@f166999204a4f2722c6fe042fbaa3b3ea0d9c789", // v2
+    unity: "game-ci/unity-builder@1d4ee0697f193f54668e98961d79907911f4b4f2", // v4
+    upload: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", // v4
+    download: "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093", // v4
+});
 
 function sha256(bytes) {
     return createHash("sha256").update(bytes).digest("hex");
 }
 
-function secretEnvironment(config) {
-    const names = new Set(config.build.requiredSecretNames ?? []);
-    if (config.hosting.github.releaseMode === "dual-repository") names.add("RELEASE_REPO_TOKEN");
-    if (config.providers.sentry?.enabled) names.add("SENTRY_ORG_CI_TOKEN");
-    return [...names].sort().map((name) => `      ${name}: \${{ secrets.${name} }}`).join("\n") || "      # No additional repository Secrets are required.";
+function yamlString(value) {
+    return JSON.stringify(String(value));
 }
 
-function sentryStep(config) {
-    if (!config.providers.sentry?.enabled) return "      # Sentry provider is disabled.";
-    return `      - name: Upload Sentry release artifacts
+function yamlEnv(names, indent) {
+    if (!names.length) return "";
+    return `${" ".repeat(indent)}env:\n${names.map((name) => `${" ".repeat(indent + 2)}${name}: \${{ secrets.${name} }}`).join("\n")}\n`;
+}
+
+function adapterSetup(config, unit) {
+    const adapter = config.project.adapter;
+    if (unit.runner === "self-hosted" && adapter === "godot") return "";
+    if (adapter === "android-gradle" || (adapter === "react-native" && unit.target === "android")) {
+        return `      - uses: ${ACTIONS.java}\n        with:\n          distribution: temurin\n          java-version: "17"\n`;
+    }
+    if (adapter === "dotnet") {
+        return `      - uses: ${ACTIONS.dotnet}\n        with:\n          dotnet-version: "8.0.x"\n`;
+    }
+    if (adapter === "flutter") {
+        return `      - uses: ${ACTIONS.flutter}\n        with:\n          channel: stable\n          cache: true\n`;
+    }
+    if (adapter === "godot") {
+        const android = unit.target === "android"
+            ? `      - uses: ${ACTIONS.java}\n        with:\n          distribution: temurin\n          java-version: "17"\n`
+            : "";
+        return `${android}      - uses: ${ACTIONS.godot}\n        with:\n          version: ${yamlString(config.project.adapterOptions.godotVersion)}\n          use-dotnet: false\n`;
+    }
+    return "";
+}
+
+function commandBuildStep(config, unit) {
+    if (config.project.adapter === "unity") {
+        const license = config.project.adapterOptions.license;
+        const secrets = license === "personal"
+            ? ["UNITY_LICENSE", "UNITY_EMAIL", "UNITY_PASSWORD"]
+            : ["UNITY_SERIAL", "UNITY_EMAIL", "UNITY_PASSWORD"];
+        return `      - name: Build ${unit.id} with GameCI
+${yamlEnv(secrets, 8)}        uses: ${ACTIONS.unity}
+        with:
+          projectPath: ${yamlString(config.project.adapterOptions.projectPath)}
+          targetPlatform: ${yamlString(unit.target)}
+`;
+    }
+    return `      - name: Build ${unit.id}
+${yamlEnv(unit.requiredSecretNames ?? [], 8)}        run: node .release-ops/runtime/run-build.mjs --root . --unit ${yamlString(unit.id)}
+`;
+}
+
+function providerUploadSteps(config, unit) {
+    const steps = [];
+    for (const [id, providerConfig] of Object.entries(config.providers)) {
+        const provider = PROVIDERS[id];
+        if (!providerConfig.enabled || !provider?.buildHook) continue;
+        const secret = provider.requiredSecrets[provider.buildHook.secretRole];
+        steps.push(`      - name: Upload ${id} debug artifacts for ${unit.id}
+        env:
+          ${secret}: \${{ secrets.${secret} }}
         run: >-
-          node .release-ops/runtime/sentry-build-hook.mjs
-          --root . --version "\${{ inputs.versionName }}"
-          --code "\${{ inputs.versionCode }}" --sha "\${{ inputs.sourceSha }}"`;
+          node .release-ops/runtime/${provider.buildHook.script}
+          --root . --mode upload --unit ${yamlString(unit.id)}
+          --version "\${{ inputs.version }}" --build-numbers "\${{ inputs.buildNumbers }}"
+          --sha "\${{ inputs.sourceSha }}"
+`);
+    }
+    return steps.join("");
 }
 
-async function verifyManagedFile(root, relativePath, expectedHash) {
+function buildJob(config, unit) {
+    return `  build_${unit.id.replaceAll("-", "_")}:
+    name: Build ${unit.id}
+    runs-on: ${unit.runner}
+    steps:
+      - uses: ${ACTIONS.checkout}
+        with:
+          ref: \${{ inputs.sourceSha }}
+          fetch-depth: 0
+      - uses: ${ACTIONS.node}
+        with:
+          node-version: "22"
+${adapterSetup(config, unit)}${commandBuildStep(config, unit)}${providerUploadSteps(config, unit)}      - name: Collect ${unit.id} artifacts
+        run: >-
+          node .release-ops/runtime/collect-artifacts.mjs --root .
+          --unit ${yamlString(unit.id)} --output .release-ops/upload
+      - uses: ${ACTIONS.upload}
+        with:
+          name: release-ops-${unit.id}
+          path: .release-ops/upload/${unit.id}
+          if-no-files-found: error
+          retention-days: 1
+`;
+}
+
+function providerReleaseJobs(config, buildNeeds) {
+    const jobs = [];
+    for (const [id, providerConfig] of Object.entries(config.providers)) {
+        const provider = PROVIDERS[id];
+        if (!providerConfig.enabled || !provider?.buildHook) continue;
+        const secret = provider.requiredSecrets[provider.buildHook.secretRole];
+        jobs.push(`  provider_${id.replaceAll("-", "_")}:
+    name: Finalize ${id} release
+    needs: [${buildNeeds.join(", ")}]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${ACTIONS.checkout}
+        with:
+          ref: \${{ inputs.sourceSha }}
+          fetch-depth: 0
+      - uses: ${ACTIONS.node}
+        with:
+          node-version: "22"
+      - name: Finalize ${id} release
+        env:
+          ${secret}: \${{ secrets.${secret} }}
+        run: >-
+          node .release-ops/runtime/${provider.buildHook.script}
+          --root . --mode release --version "\${{ inputs.version }}"
+          --build-numbers "\${{ inputs.buildNumbers }}" --sha "\${{ inputs.sourceSha }}"
+`);
+    }
+    return jobs;
+}
+
+export function renderPublishWorkflow(config) {
+    const buildNames = config.build.units.map(({ id }) => `build_${id.replaceAll("-", "_")}`);
+    const providerJobs = providerReleaseJobs(config, buildNames);
+    const providerNames = Object.entries(config.providers)
+        .filter(([id, providerConfig]) => providerConfig.enabled && PROVIDERS[id]?.buildHook)
+        .map(([id]) => `provider_${id.replaceAll("-", "_")}`);
+    const needs = [...buildNames, ...providerNames];
+    const sourceRepository = config.hosting.github.source.repository;
+    const releaseSecrets = config.hosting.github.releaseMode === "dual-repository" ? ["RELEASE_REPO_TOKEN"] : [];
+    return `name: Publish Release
+run-name: Release v\${{ inputs.version }} from \${{ inputs.sourceSha }} [\${{ inputs.correlation }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+        type: string
+      buildNumbers:
+        required: true
+        type: string
+      sourceSha:
+        required: true
+        type: string
+      correlation:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-ops-publish
+  cancel-in-progress: false
+
+jobs:
+${config.build.units.map((unit) => buildJob(config, unit)).join("")}${providerJobs.join("")}  publish:
+    name: Publish verified artifacts
+    if: github.repository == '${sourceRepository}'
+    needs: [${needs.join(", ")}]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: ${ACTIONS.checkout}
+        with:
+          ref: \${{ inputs.sourceSha }}
+          fetch-depth: 0
+      - uses: ${ACTIONS.node}
+        with:
+          node-version: "22"
+      - name: Verify release inputs
+        run: >-
+          node .release-ops/runtime/preflight-release.mjs --root .
+          --version "\${{ inputs.version }}" --build-numbers "\${{ inputs.buildNumbers }}"
+          --sha "\${{ inputs.sourceSha }}"
+      - uses: ${ACTIONS.download}
+        with:
+          pattern: release-ops-*
+          path: .release-ops/collected
+          merge-multiple: false
+      - name: Publish locally built artifacts
+        env:
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+${releaseSecrets.map((name) => `          ${name}: \${{ secrets.${name} }}`).join("\n")}${releaseSecrets.length ? "\n" : ""}        run: >-
+          node .release-ops/runtime/release-publisher.mjs --root .
+          --version "\${{ inputs.version }}" --build-numbers "\${{ inputs.buildNumbers }}"
+          --sha "\${{ inputs.sourceSha }}" --correlation "\${{ inputs.correlation }}"
+          --artifact-root .release-ops/collected
+`;
+}
+
+function templateValues(config) {
+    return {
+        "__SOURCE_REPOSITORY__": config.hosting.github.source?.repository ?? "disabled/disabled",
+        "__DEFAULT_BRANCH__": config.hosting.github.source?.defaultBranch ?? "main",
+        "__SCHEDULE__": config.providers.sentry?.schedule ?? "17 * * * *",
+    };
+}
+
+async function desiredProjectFiles(config, { includeConfig = false } = {}) {
+    const desired = new Map();
+    const add = (path, bytes) => desired.set(path.replaceAll("\\", "/"), Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes, "utf8"));
+    if (includeConfig) add(".release-ops/config.json", `${JSON.stringify(config, null, 2)}\n`);
+    for (const name of CORE_RUNTIME_FILES) add(`.release-ops/runtime/${name}`, await readFile(resolve(PLUGIN_ROOT, "scripts", name)));
+    for (const [id, adapter] of Object.entries(ADAPTERS)) {
+        add(`.release-ops/runtime/adapters/${id}/adapter.json`, await readFile(join(adapter.manifestDirectory, "adapter.json")));
+    }
+    for (const [id, providerConfig] of Object.entries(config.providers)) {
+        const provider = PROVIDERS[id];
+        if (!providerConfig.enabled) continue;
+        add(`.release-ops/runtime/providers/${id}/provider.json`, await readFile(join(provider.manifestDirectory, "provider.json")));
+        add(`.release-ops/runtime/providers/${id}/${provider.configSchema}`, await readFile(join(provider.manifestDirectory, provider.configSchema)));
+        for (const name of provider.runtimeFiles) add(`.release-ops/runtime/${name}`, await readFile(resolve(PLUGIN_ROOT, "scripts", name)));
+        for (const managed of provider.managedFiles ?? []) {
+            if (managed.requiresIssueSync && !providerConfig.issueSync) continue;
+            let text = await readFile(join(provider.manifestDirectory, managed.source), "utf8");
+            for (const [token, value] of Object.entries(templateValues(config))) text = text.replaceAll(token, value);
+            add(managed.target, text);
+        }
+    }
+    if (config.hosting.github.enabled) add(config.release.workflowFile, renderPublishWorkflow(config));
+    return desired;
+}
+
+async function existingBytes(root, relativePath) {
+    const target = await resolveRepositoryPath(root, relativePath, { name: `managed file ${relativePath}` });
     try {
-        const current = await readFile(resolve(root, relativePath));
-        if (sha256(current) !== expectedHash) throw new Error(`Managed file has local changes: ${relativePath}`);
+        return await readFile(target);
     } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+        if (error?.code === "ENOENT") return null;
+        throw error;
     }
 }
 
-async function writeManagedFile(root, relativePath, bytes, previousFiles, upgrade) {
-    const target = resolve(root, relativePath);
-    let existing = null;
-    try {
-        existing = await readFile(target);
-    } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+function normalizePrevious(previous) {
+    const result = {};
+    for (const [path, record] of Object.entries(previous?.files ?? {})) {
+        result[path] = typeof record === "string" ? { desiredHash: record } : record;
     }
-    if (existing && !upgrade && !previousFiles?.[relativePath] && sha256(existing) !== sha256(bytes)) {
-        throw new Error(`Refusing to overwrite an unmanaged existing file: ${relativePath}`);
-    }
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, bytes);
-    return sha256(bytes);
+    return result;
 }
 
-export async function installProjectFiles(root, config, { upgrade = false } = {}) {
+export async function planProjectFiles(root, config, { includeConfig = false } = {}) {
     const manifestPath = resolve(root, ".release-ops", "managed-files.json");
     let previous = null;
     try {
@@ -77,42 +292,118 @@ export async function installProjectFiles(root, config, { upgrade = false } = {}
     } catch (error) {
         if (error?.code !== "ENOENT") throw error;
     }
-    if (upgrade && previous) {
-        for (const [path, hash] of Object.entries(previous.files ?? {})) await verifyManagedFile(root, path, hash);
-    }
-    const written = new Map();
-    const previousFiles = previous?.files ?? {};
-    for (const name of RUNTIME_FILES) {
-        const source = resolve(PLUGIN_ROOT, "scripts", name);
-        const relativePath = `.release-ops/runtime/${name}`;
-        written.set(relativePath, await writeManagedFile(root, relativePath, await readFile(source), previousFiles, upgrade));
-    }
-    if (config.hosting.github.enabled) {
-        const template = await readFile(resolve(PLUGIN_ROOT, "assets", "templates", "publish-release.yml"), "utf8");
-        const workflow = template
-            .replaceAll("__SOURCE_REPOSITORY__", config.hosting.github.sourceRepository)
-            .replace("__SECRET_ENV__", secretEnvironment(config))
-            .replace("__SENTRY_STEP__", sentryStep(config));
-        const relativePath = config.release.workflowFile.replaceAll("\\", "/");
-        written.set(relativePath, await writeManagedFile(root, relativePath, Buffer.from(workflow, "utf8"), previousFiles, upgrade));
-    }
-    if (config.providers.sentry?.enabled && config.providers.sentry.issueSync && config.hosting.github.enabled) {
-        const templates = [
-            ["sentry-issues.yml", ".github/workflows/sentry-issues.yml"],
-            ["resolve-issues.yml", ".github/workflows/resolve-issues.yml"],
-        ];
-        for (const [templateName, relativePath] of templates) {
-            const text = (await readFile(resolve(PLUGIN_ROOT, "assets", "templates", templateName), "utf8"))
-                .replaceAll("__SOURCE_REPOSITORY__", config.hosting.github.sourceRepository)
-                .replaceAll("__DEFAULT_BRANCH__", config.hosting.github.defaultBranch)
-                .replaceAll("__SCHEDULE__", config.providers.sentry.schedule ?? "17 * * * *");
-            written.set(relativePath, await writeManagedFile(root, relativePath, Buffer.from(text, "utf8"), previousFiles, upgrade));
+    const previousFiles = normalizePrevious(previous);
+    const desired = await desiredProjectFiles(config, { includeConfig });
+    const paths = [...new Set([...Object.keys(previousFiles), ...desired.keys()])].sort();
+    const operations = [];
+    const conflicts = [];
+    for (const path of paths) {
+        const current = await existingBytes(root, path);
+        const currentHash = current ? sha256(current) : null;
+        const desiredBytes = desired.get(path) ?? null;
+        const desiredHash = desiredBytes ? sha256(desiredBytes) : null;
+        const previousHash = previousFiles[path]?.desiredHash ?? null;
+        let operation = "unchanged";
+        if (desiredHash === currentHash) operation = "unchanged";
+        else if (!desiredHash && currentHash) operation = "delete";
+        else if (desiredHash && !currentHash) operation = "add";
+        else operation = "update";
+        const managedBefore = Boolean(previousFiles[path]);
+        const reinitializingV1Config = path === ".release-ops/config.json" && current && (() => {
+            try { return JSON.parse(current.toString("utf8")).schemaVersion === "release-ops/config/v1"; } catch { return false; }
+        })();
+        if (operation !== "unchanged") {
+            if (managedBefore && currentHash !== previousHash) conflicts.push({ path, reason: "managed-file-changed", expectedHash: previousHash, currentHash });
+            else if (!managedBefore && currentHash && !reinitializingV1Config) conflicts.push({ path, reason: "unmanaged-file-exists", currentHash });
         }
-        const testRelative = ".release-ops/runtime/tests/sentry-lifecycle.test.mjs";
-        const testSource = resolve(PLUGIN_ROOT, "scripts", "tests", "sentry-lifecycle.test.mjs");
-        written.set(testRelative, await writeManagedFile(root, testRelative, await readFile(testSource), previousFiles, upgrade));
+        operations.push({ path, operation, baseHash: previousHash, currentHash, desiredHash });
     }
-    const manifest = { schemaVersion: "release-ops-managed-files/v1", files: Object.fromEntries([...written].sort()) };
-    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    return { schemaVersion: "release-ops-managed-plan/v2", operations, conflicts, desired };
+}
+
+function publicPlan(plan) {
+    return { schemaVersion: plan.schemaVersion, operations: plan.operations, conflicts: plan.conflicts };
+}
+
+export async function installProjectFiles(root, config, {
+    includeConfig = false,
+    expectedPlan = null,
+} = {}) {
+    const plan = await planProjectFiles(root, config, { includeConfig });
+    if (plan.conflicts.length) throw new Error(`Managed file conflicts: ${plan.conflicts.map(({ path }) => path).join(", ")}`);
+    if (expectedPlan && JSON.stringify(publicPlan(plan)) !== JSON.stringify(expectedPlan)) {
+        throw new Error("Managed file state changed after the confirmed setup plan");
+    }
+    const releaseOpsRoot = await resolveRepositoryPath(root, ".release-ops", { name: "Release Ops state directory" });
+    await mkdir(releaseOpsRoot, { recursive: true });
+    const stage = join(releaseOpsRoot, `.apply-${randomUUID()}`);
+    const staged = join(stage, "new");
+    const backup = join(stage, "backup");
+    await mkdir(staged, { recursive: true });
+    const changed = plan.operations.filter(({ operation }) => operation !== "unchanged");
+    const manifest = {
+        schemaVersion: "release-ops-managed-files/v2",
+        files: Object.fromEntries([...plan.desired.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([path, bytes]) => {
+            const operation = plan.operations.find((entry) => entry.path === path);
+            const hash = sha256(bytes);
+            return [path, { baseHash: operation?.currentHash ?? null, currentHash: hash, desiredHash: hash }];
+        })),
+    };
+    for (const operation of changed.filter(({ desiredHash }) => desiredHash)) {
+        const path = join(staged, operation.path);
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, plan.desired.get(operation.path));
+    }
+    const stagedManifest = join(staged, ".release-ops", "managed-files.json");
+    await mkdir(dirname(stagedManifest), { recursive: true });
+    await writeFile(stagedManifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    const applied = [];
+    let manifestTarget = null;
+    let manifestBackup = null;
+    let manifestHadPrevious = false;
+    try {
+        for (const operation of changed) {
+            const target = await resolveRepositoryPath(root, operation.path, { name: `managed file ${operation.path}` });
+            const saved = join(backup, operation.path);
+            if (operation.currentHash) {
+                await mkdir(dirname(saved), { recursive: true });
+                await rename(target, saved);
+            }
+            if (operation.desiredHash) {
+                await mkdir(dirname(target), { recursive: true });
+                await rename(join(staged, operation.path), target);
+            }
+            applied.push({ ...operation, target, saved });
+        }
+        manifestTarget = join(releaseOpsRoot, "managed-files.json");
+        manifestBackup = join(backup, ".release-ops", "managed-files.json");
+        try {
+            await access(manifestTarget);
+            manifestHadPrevious = true;
+            await mkdir(dirname(manifestBackup), { recursive: true });
+            await rename(manifestTarget, manifestBackup);
+        } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+        }
+        await rename(stagedManifest, manifestTarget);
+    } catch (error) {
+        if (manifestTarget) {
+            await rm(manifestTarget, { force: true });
+            if (manifestHadPrevious) {
+                await mkdir(dirname(manifestTarget), { recursive: true });
+                await rename(manifestBackup, manifestTarget);
+            }
+        }
+        for (const operation of applied.reverse()) {
+            if (operation.desiredHash) await rm(operation.target, { force: true });
+            if (operation.currentHash) {
+                await mkdir(dirname(operation.target), { recursive: true });
+                await rename(operation.saved, operation.target);
+            }
+        }
+        throw error;
+    } finally {
+        await rm(stage, { recursive: true, force: true });
+    }
     return manifest;
 }

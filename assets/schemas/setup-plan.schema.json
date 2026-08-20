@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/setup-plan-v2.json",
+  "title": "Release Ops setup plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "root", "inspection", "config", "repositories", "requiredSecrets", "managedFiles", "planDigest"],
+  "properties": {
+    "schemaVersion": { "const": "release-ops/setup-plan/v2" },
+    "root": { "type": "string", "minLength": 1 },
+    "inspection": { "type": "object" },
+    "config": { "$ref": "config.schema.json" },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "action", "identity"],
+        "properties": {
+          "role": { "enum": ["source", "distribution"] },
+          "action": { "enum": ["existing", "create"] },
+          "identity": { "$ref": "config.schema.json#/$defs/repositoryIdentity" }
+        }
+      }
+    },
+    "requiredSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "purpose"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" },
+          "purpose": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "managedFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operations", "conflicts"],
+      "properties": {
+        "schemaVersion": { "const": "release-ops-managed-plan/v2" },
+        "operations": { "type": "array", "items": { "$ref": "#/$defs/managedOperation" } },
+        "conflicts": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "planDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "$defs": {
+    "nullableHash": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "null" }] },
+    "managedOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "operation", "baseHash", "currentHash", "desiredHash"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "operation": { "enum": ["unchanged", "add", "update", "delete"] },
+        "baseHash": { "$ref": "#/$defs/nullableHash" },
+        "currentHash": { "$ref": "#/$defs/nullableHash" },
+        "desiredHash": { "$ref": "#/$defs/nullableHash" }
+      }
+    }
+  }
+}

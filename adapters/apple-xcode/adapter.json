@@ -1,0 +1,1 @@
+{"schemaVersion":"release-ops/adapter/v2","id":"apple-xcode","status":"supported","docs":"docs/stacks/apple.md","detects":["*.xcodeproj","*.xcworkspace"],"artifactTypes":["ipa","pkg","archive"],"debugArtifactTypes":["dif"],"targets":[{"id":"macos","runner":"macos-latest"},{"id":"ios","runner":"macos-latest"}]}

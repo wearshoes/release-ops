@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/provider-config-sentry-v1.json",
+  "title": "Release Ops Sentry provider configuration",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "enabled"],
+      "properties": {
+        "schemaVersion": { "const": "release-ops/provider-config/sentry/v1" },
+        "enabled": { "const": false }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "enabled", "organization", "project", "apiBase", "issueSync", "lookbackMinutes", "schedule", "releaseTemplate", "distTemplate", "debugArtifacts"],
+      "properties": {
+        "schemaVersion": { "const": "release-ops/provider-config/sentry/v1" },
+        "enabled": { "const": true },
+        "organization": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "project": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "apiBase": { "type": "string", "pattern": "^https://.+/api/0/?$" },
+        "issueSync": { "type": "boolean" },
+        "lookbackMinutes": { "type": "integer", "minimum": 75 },
+        "schedule": { "type": "string", "minLength": 9 },
+        "releaseTemplate": { "type": ["string", "null"] },
+        "distTemplate": { "type": ["string", "null"] },
+        "debugArtifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "path"],
+            "properties": {
+              "type": { "enum": ["proguard", "source-map", "dif", "dart-symbol", "bcsymbolmap", "breakpad", "dsym", "elf", "jvm", "pdb", "pe", "portablepdb", "sourcebundle", "wasm"] },
+              "path": { "type": "string", "minLength": 1 },
+              "unit": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

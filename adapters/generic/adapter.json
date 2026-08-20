@@ -1,0 +1,1 @@
+{"schemaVersion":"release-ops/adapter/v2","id":"generic","status":"supported","docs":"docs/stacks/generic.md","detects":[],"artifactTypes":["configured"],"debugArtifactTypes":[],"targets":[],"selfHostedFallback":true,"selfHostedConditions":["explicit-custom-toolchain"]}

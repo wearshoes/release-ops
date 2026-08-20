@@ -2,97 +2,72 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CONFIG_SCHEMA, RELEASE_SCHEMA, validateConfig } from "../config.mjs";
-import { BUILD_ADAPTERS, PROVIDERS, providerChoices } from "../provider-registry.mjs";
+import { BUILD_ADAPTERS, PROVIDERS } from "../provider-registry.mjs";
+import { baseConfig } from "./fixtures.mjs";
 
-function fixture(overrides = {}) {
-    return {
-        schemaVersion: CONFIG_SCHEMA,
-        project: { name: "Example", adapter: "android-gradle" },
-        build: {
-            command: "./gradlew assembleRelease",
-            artifacts: [{
-                id: "app",
-                path: "app/build/outputs/apk/release/app-release.apk",
-                nameTemplate: "example-v{version}.apk",
-                contentType: "application/vnd.android.package-archive",
-                platform: "android",
-                architecture: "universal",
-            }],
-        },
-        versioning: {
-            file: "gradle.properties",
-            versionKey: "VERSION_NAME",
-            codeKey: "VERSION_CODE",
-            changelogPattern: "docs/releases/v{version}.md",
-            requiresChinese: false,
-        },
-        hosting: {
-            github: {
-                enabled: true,
-                sourceRepository: "owner/example",
-                sourceVisibility: "private",
-                defaultBranch: "main",
-                releaseMode: "dual-repository",
-                publicRepository: "owner/example-releases",
-            },
-        },
-        release: {
-            workflowFile: ".github/workflows/publish-release.yml",
-            tagTemplate: "v{version}",
-            titleTemplate: "Example {version}",
-            manifestSchema: RELEASE_SCHEMA,
-            publicReadme: "docs/public-release-readme.md",
-            latestManifest: "latest.json",
-        },
-        providers: {
-            sentry: {
-                enabled: true,
-                schemaVersion: PROVIDERS.sentry.schemaVersion,
-                organization: "owner",
-                project: "example",
-                host: "owner.sentry.io",
-                issueSync: true,
-            },
-        },
-        ...overrides,
+test("validates the v2 private dual-repository Sentry contract", () => {
+    const config = baseConfig({ sentry: true });
+    assert.equal(config.schemaVersion, CONFIG_SCHEMA);
+    assert.equal(config.release.manifestSchema, RELEASE_SCHEMA);
+    assert.equal(config.build.units[0].command.executable, "node");
+    assert.equal(config.hosting.github.source.defaultBranch, "main");
+    assert.equal(config.hosting.github.source.owner, "private-owner");
+    assert.equal(config.hosting.github.source.name, "private-source");
+    assert.equal(config.hosting.github.distribution.visibility, "public");
+    assert.equal(config.providers.sentry.lookbackMinutes, 75);
+});
+
+test("rejects shell commands, repository escapes, and unsupported Unreal", () => {
+    const shell = structuredClone(baseConfig());
+    shell.build.units[0].command.shell = true;
+    assert.throws(() => validateConfig(shell), /shell is forbidden/u);
+    const escape = structuredClone(baseConfig());
+    escape.build.units[0].artifacts[0].path = "../private.bin";
+    assert.throws(() => validateConfig(escape), /unsafe path/u);
+    const unreal = structuredClone(baseConfig());
+    unreal.project.adapter = "unreal";
+    assert.throws(() => validateConfig(unreal), /detected but unsupported/u);
+});
+
+test("enforces GitHub topology and provider isolation", () => {
+    const publicConfig = structuredClone(baseConfig({ mode: "same-repository" }));
+    publicConfig.hosting.github.distribution = {
+        repository: "owner/releases", owner: "owner", name: "releases", visibility: "public", defaultBranch: "main",
     };
-}
-
-test("validates a private dual-repository Sentry project", () => {
-    assert.equal(validateConfig(fixture()).schemaVersion, CONFIG_SCHEMA);
-});
-
-test("enforces hosting topology", () => {
-    const value = fixture();
-    value.hosting.github.releaseMode = "same-repository";
-    assert.throws(() => validateConfig(value), /private sources must use dual-repository/u);
-});
-
-test("disabling GitHub prevents Sentry issue sync", () => {
-    const value = fixture();
-    value.hosting.github = {
-        enabled: false,
-        sourceRepository: null,
-        sourceVisibility: "none",
-        defaultBranch: "main",
-        releaseMode: "local",
-        publicRepository: null,
+    assert.throws(() => validateConfig(publicConfig), /no separate distribution/u);
+    const local = structuredClone(baseConfig({ github: false }));
+    local.providers.sentry = {
+        ...baseConfig({ github: false, sentry: true }).providers.sentry,
+        issueSync: true,
     };
-    assert.throws(() => validateConfig(value), /issueSync requires GitHub/u);
-    value.providers.sentry.issueSync = false;
-    assert.equal(validateConfig(value).hosting.github.releaseMode, "local");
+    assert.throws(() => validateConfig(local), /issueSync requires GitHub/u);
 });
 
-test("rejects credential-shaped config fields", () => {
-    const value = fixture();
-    value.providers.sentry.authToken = "must-not-exist";
-    assert.throws(() => validateConfig(value), /credential material/u);
+test("rejects inconsistent split repository identities", () => {
+    const config = structuredClone(baseConfig());
+    config.hosting.github.source.owner = "someone-else";
+    assert.throws(() => validateConfig(config), /remote identity is inconsistent/u);
 });
 
-test("registers all planned adapters and only implemented providers", () => {
-    assert.deepEqual(providerChoices(), ["none", "sentry"]);
-    assert.deepEqual(
-        BUILD_ADAPTERS.map(({ id }) => id),
-        ["android-gradle", "apple-xcode", "javascript", "dotnet", "native", "flutter", "react-native", "unity", "godot", "unreal", "generic"],
-    );
+test("self-hosted fallback requires adapter support and an explicit reason", () => {
+    const android = structuredClone(baseConfig());
+    android.project.adapter = "android-gradle";
+    android.build.units[0].target = "android";
+    android.build.units[0].runner = "self-hosted";
+    android.build.units[0].selfHostedReason = "custom toolchain";
+    assert.throws(() => validateConfig(android), /cannot use a self-hosted runner/u);
+
+    const godot = structuredClone(baseConfig());
+    godot.project = { name: "Game", adapter: "godot", adapterOptions: { godotVersion: "4.4.1" } };
+    godot.build.units[0].runner = "self-hosted";
+    assert.throws(() => validateConfig(godot), /selfHostedReason is invalid/u);
+});
+
+test("registry is manifest-driven and exposes no placeholder providers", () => {
+    assert.deepEqual(Object.keys(PROVIDERS), ["sentry"]);
+    assert.equal(PROVIDERS.sentry.schemaVersion, "release-ops/provider/v2");
+    assert.equal(PROVIDERS.sentry.configSchemaVersion, "release-ops/provider-config/sentry/v1");
+    assert.equal(BUILD_ADAPTERS.find(({ id }) => id === "godot").targets.find(({ id }) => id === "windows").runner, "windows-latest");
+    assert.equal(BUILD_ADAPTERS.find(({ id }) => id === "unity").status, "credential-gated");
+    assert.equal(BUILD_ADAPTERS.find(({ id }) => id === "unreal").status, "unsupported");
 });

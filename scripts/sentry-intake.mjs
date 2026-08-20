@@ -19,7 +19,7 @@ function sanitizedIssue(issue, expectedRepository, expectedProject) {
 }
 
 export async function intake({ config, github, command, issueNumber = null }) {
-    const repository = config.hosting.github.sourceRepository;
+    const repository = config.hosting.github.source.repository;
     const project = config.providers.sentry.project;
     if (command === "show") {
         if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) throw new Error("show requires a positive Issue number");
@@ -41,7 +41,7 @@ async function main() {
     const issueIndex = process.argv.indexOf("--issue");
     const root = resolve(rootIndex >= 0 ? process.argv[rootIndex + 1] : process.cwd());
     const config = await loadConfig(root);
-    const repository = config.hosting.github.sourceRepository;
+    const repository = config.hosting.github.source.repository;
     const result = await intake({
         config,
         github: createGitHubClient({ sourceRepository: repository, sourceToken: process.env.github_token ?? process.env.GITHUB_TOKEN }),

@@ -42,7 +42,7 @@ export function planResolutions(event, isAncestor) {
 }
 
 export async function applyResolutions({ config, bindings, github, sentryRead, sentryWrite }) {
-    const repository = config.hosting.github.sourceRepository;
+    const repository = config.hosting.github.source.repository;
     const results = [];
     for (const binding of bindings) {
         try {
@@ -56,19 +56,32 @@ export async function applyResolutions({ config, bindings, github, sentryRead, s
             }
             if (kind === "sentry") {
                 await resolveSentryIncident({ config, issue, commitSha: binding.commitSha, sentryRead, sentryWrite, github });
-            } else {
-                await github.request(`/repos/${repository}/issues/${issue.number}/comments`, {
-                    method: "POST",
-                    json: { body: `Resolved by commit https://github.com/${repository}/commit/${binding.commitSha}\n\n${binding.subject}` },
-                });
-                await github.request(`/repos/${repository}/issues/${issue.number}`, { method: "PATCH", json: { state: "closed" } });
             }
+            await github.request(`/repos/${repository}/issues/${issue.number}/comments`, {
+                method: "POST",
+                json: { body: `Resolved by commit https://github.com/${repository}/commit/${binding.commitSha}\n\n${binding.subject}` },
+            });
+            await github.request(`/repos/${repository}/issues/${issue.number}`, { method: "PATCH", json: { state: "closed" } });
             results.push({ issueNumber: binding.issueNumber, kind, result: "resolved" });
         } catch (error) {
             results.push({ issueNumber: binding.issueNumber, kind: "unknown", result: "failed", errorCategory: "RESOLUTION_FAILED" });
         }
     }
-    return { schemaVersion: "release-ops-issue-resolution-batch/v1", results, success: results.every(({ result }) => result === "resolved") };
+    return { schemaVersion: "release-ops-issue-resolution-batch/v2", results, success: results.every(({ result }) => result === "resolved") };
+}
+
+function completePushEvent(root, event) {
+    const before = String(event?.before ?? "");
+    const after = String(event?.after ?? "");
+    if (!/^[0-9a-f]{40}$/u.test(after)) throw new Error("Push event after SHA is invalid");
+    const range = /^0{40}$/u.test(before) || !/^[0-9a-f]{40}$/u.test(before) ? after : `${before}..${after}`;
+    const shas = execFileSync("git", ["-C", root, "rev-list", "--reverse", range], { encoding: "utf8" })
+        .trim().split(/\r?\n/u).filter(Boolean);
+    const commits = shas.map((id) => ({
+        id,
+        message: execFileSync("git", ["-C", root, "show", "-s", "--format=%B", id], { encoding: "utf8" }).trimEnd(),
+    }));
+    return { ...event, after, commits };
 }
 
 async function main() {
@@ -76,7 +89,7 @@ async function main() {
     const root = resolve(rootIndex >= 0 ? process.argv[rootIndex + 1] : process.cwd());
     const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8"));
     const config = await loadConfig(root);
-    const bindings = planResolutions(event, (target, head) => {
+    const bindings = planResolutions(completePushEvent(root, event), (target, head) => {
         try {
             execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", target, head], { stdio: "ignore" });
             return true;
@@ -84,13 +97,13 @@ async function main() {
             return false;
         }
     });
-    const github = createGitHubClient({ sourceRepository: config.hosting.github.sourceRepository, sourceToken: process.env.GITHUB_TOKEN });
+    const github = createGitHubClient({ sourceRepository: config.hosting.github.source.repository, sourceToken: process.env.GITHUB_TOKEN });
     const result = await applyResolutions({
         config,
         bindings,
         github,
-        sentryRead: createSentryClient({ token: process.env.SENTRY_AUTH_TOKEN }),
-        sentryWrite: createSentryClient({ token: process.env.SENTRY_WRITE_TOKEN }),
+        sentryRead: createSentryClient({ token: process.env.SENTRY_AUTH_TOKEN, apiBase: config.providers.sentry.apiBase }),
+        sentryWrite: createSentryClient({ token: process.env.SENTRY_WRITE_TOKEN, apiBase: config.providers.sentry.apiBase }),
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (!result.success) process.exitCode = 1;

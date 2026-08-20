@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { loadConfig } from "./config.mjs";
+import { resolveRepositoryPath } from "./path-safety.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,35 +17,56 @@ function applyTemplate(template, values) {
     });
 }
 
-export function planSentryBuildHook(config, { root = process.cwd(), version, versionCode = null, sourceSha }) {
+export async function planSentryBuildHook(config, {
+    root = process.cwd(),
+    version,
+    buildNumbers = {},
+    sourceSha,
+    unitId = null,
+    mode = "upload",
+}) {
     const sentry = config.providers.sentry;
-    if (!sentry?.enabled) return { schemaVersion: "release-ops-sentry-build-hook/v1", enabled: false, commands: [] };
+    if (!sentry?.enabled) return { schemaVersion: "release-ops-sentry-build-hook/v2", enabled: false, commands: [] };
+    if (!["upload", "release"].includes(mode)) throw new Error("Sentry build hook mode must be upload or release");
     if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error("Sentry build hook requires a full lowercase source SHA");
-    const values = { version, versionCode, sourceSha, project: config.project.name };
+    const values = {
+        version,
+        versionCode: Object.values(buildNumbers)[0] ?? "",
+        ...buildNumbers,
+        sourceSha,
+        project: config.project.name,
+    };
     const release = applyTemplate(sentry.releaseTemplate ?? "{project}@{version}", values);
-    const dist = applyTemplate(sentry.distTemplate ?? "{versionCode}", values);
+    const dist = applyTemplate(sentry.distTemplate ?? "{version}", values);
     const shared = ["--org", sentry.organization, "--project", sentry.project];
-    const commands = [
-        { executable: "sentry-cli", args: ["releases", "new", release, ...shared] },
-    ];
-    if (config.hosting.github.enabled) {
-        commands.push({
-            executable: "sentry-cli",
-            args: ["releases", "set-commits", release, "--commit", `${config.hosting.github.sourceRepository}@${sourceSha}`, ...shared],
-        });
+    const commands = [];
+    if (mode === "release") {
+        commands.push({ executable: "sentry-cli", args: ["releases", "new", release, ...shared] });
+        if (config.hosting.github.enabled) {
+            commands.push({
+                executable: "sentry-cli",
+                args: ["releases", "set-commits", release, "--commit", `${config.hosting.github.source.repository}@${sourceSha}`, ...shared],
+            });
+        }
+        commands.push({ executable: "sentry-cli", args: ["releases", "finalize", release, ...shared] });
     }
-    for (const artifact of sentry.debugArtifacts ?? []) {
-        const path = resolve(root, applyTemplate(artifact.path, values));
+    for (const artifact of (sentry.debugArtifacts ?? []).filter((entry) => mode === "upload" && (!entry.unit || entry.unit === unitId))) {
+        const relative = applyTemplate(artifact.path, values);
+        const path = await resolveRepositoryPath(root, relative, { name: `Sentry debug artifact ${relative}`, mustExist: true });
         if (artifact.type === "source-map") {
             commands.push({ executable: "sentry-cli", args: ["sourcemaps", "inject", path] });
             commands.push({ executable: "sentry-cli", args: ["sourcemaps", "upload", "--release", release, "--dist", dist, ...shared, path] });
+        } else if (artifact.type === "proguard") {
+            commands.push({ executable: "sentry-cli", args: ["upload-proguard", ...shared, "--require-one", path] });
         } else {
-            const type = artifact.type === "dart-symbol" ? "debug-id" : artifact.type;
-            commands.push({ executable: "sentry-cli", args: ["debug-files", "upload", "--type", type, ...shared, path] });
+            const type = artifact.type === "dart-symbol" ? "breakpad" : artifact.type === "dif" ? null : artifact.type;
+            commands.push({
+                executable: "sentry-cli",
+                args: ["debug-files", "upload", ...shared, ...(type ? ["--type", type] : []), path],
+            });
         }
     }
-    commands.push({ executable: "sentry-cli", args: ["releases", "finalize", release, ...shared] });
-    return { schemaVersion: "release-ops-sentry-build-hook/v1", enabled: true, release, dist, commands };
+    return { schemaVersion: "release-ops-sentry-build-hook/v2", enabled: true, mode, unitId, release, dist, apiBase: sentry.apiBase, commands };
 }
 
 export async function runSentryBuildHook(plan, { env = process.env, exec = execFileAsync } = {}) {
@@ -54,7 +76,11 @@ export async function runSentryBuildHook(plan, { env = process.env, exec = execF
     for (const command of plan.commands) {
         await exec(command.executable, command.args, {
             windowsHide: true,
-            env: { ...env, SENTRY_AUTH_TOKEN: token },
+            env: {
+                ...Object.fromEntries(Object.entries(env).filter(([name]) => !/(?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY)$/iu.test(name))),
+                SENTRY_AUTH_TOKEN: token,
+                ...(plan.apiBase ? { SENTRY_URL: plan.apiBase.replace(/\/api\/0\/?$/u, "") } : {}),
+            },
         });
     }
     return { schemaVersion: plan.schemaVersion, enabled: true, release: plan.release, dist: plan.dist, commandCount: plan.commands.length, completed: true };
@@ -70,11 +96,13 @@ async function main() {
     }
     const root = resolve(args.get("--root") ?? process.cwd());
     const config = await loadConfig(root);
-    const plan = planSentryBuildHook(config, {
+    const plan = await planSentryBuildHook(config, {
         root,
         version: args.get("--version") ?? "",
-        versionCode: args.has("--code") && args.get("--code") !== "" ? Number(args.get("--code")) : null,
+        buildNumbers: JSON.parse(args.get("--build-numbers") ?? "{}"),
         sourceSha: args.get("--sha") ?? "",
+        unitId: args.get("--unit") ?? null,
+        mode: args.get("--mode") ?? "upload",
     });
     const result = await runSentryBuildHook(plan);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

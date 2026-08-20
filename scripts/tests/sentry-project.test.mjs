@@ -34,6 +34,12 @@ test("create requires an exact slug confirmation", () => {
     );
 });
 
+test("project provisioning accepts only HTTPS apiBase endpoints", () => {
+    const common = ["inspect", "--org", "wearshoes", "--team", "wearshoes", "--slug", "example"];
+    assert.equal(parseArguments([...common, "--api-base", "https://self.example/api/0"]).apiBase, "https://self.example/api/0");
+    assert.throws(() => parseArguments([...common, "--api-base", "http://self.example/api/0"]), /HTTPS/u);
+});
+
 test("dry-run validates the team and plans without a POST", async () => {
     const calls = [];
     const fetchImpl = async (url, request) => {

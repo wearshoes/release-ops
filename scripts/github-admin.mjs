@@ -44,8 +44,11 @@ function sanitizedRepository(data) {
     if (!REPOSITORY_PATTERN.test(data.full_name ?? "") || typeof data.default_branch !== "string") {
         throw new Error("GitHub returned invalid repository identity");
     }
+    const [owner, name] = data.full_name.split("/");
     return {
         repository: data.full_name,
+        owner,
+        name,
         visibility,
         defaultBranch: data.default_branch,
         archived: Boolean(data.archived),
@@ -59,7 +62,7 @@ export async function inspectRepository({ github, repository }) {
     return { schemaVersion: "release-ops-github-repository/v1", exists: true, ...sanitizedRepository(response.data) };
 }
 
-export async function createRepository({ github, repository, visibility, confirmation, dryRun = true }) {
+export async function createRepository({ github, repository, visibility, confirmation, dryRun = true, initialize = false }) {
     validateRepository(repository);
     if (!["private", "public"].includes(visibility)) throw new Error("Visibility must be private or public");
     const existing = await github.request(`/repos/${repository}`, { allowNotFound: true });
@@ -70,7 +73,20 @@ export async function createRepository({ github, repository, visibility, confirm
     }
     const [owner, name] = repository.split("/");
     if (dryRun) {
-        return { schemaVersion: "release-ops-github-repository/v1", created: false, dryRun: true, repository, visibility };
+        const currentUser = (await github.request("/user")).data;
+        if (currentUser?.login?.toLowerCase() !== owner.toLowerCase()) {
+            const organization = (await github.request(`/orgs/${encodeURIComponent(owner)}`)).data;
+            if (organization?.login?.toLowerCase() !== owner.toLowerCase()) throw new Error("GitHub repository owner could not be verified");
+        }
+        return {
+            schemaVersion: "release-ops-github-repository/v1",
+            created: false,
+            dryRun: true,
+            repository,
+            owner,
+            name,
+            visibility,
+        };
     }
     if (confirmation !== `${repository}:${visibility}`) {
         throw new Error("Creation requires --confirm owner/name:visibility");
@@ -81,7 +97,7 @@ export async function createRepository({ github, repository, visibility, confirm
         : `/orgs/${encodeURIComponent(owner)}/repos`;
     const created = await github.request(path, {
         method: "POST",
-        json: { name, private: visibility === "private", has_issues: true, auto_init: false },
+        json: { name, private: visibility === "private", has_issues: true, auto_init: initialize },
     });
     const inspected = sanitizedRepository(created.data);
     if (inspected.repository !== repository || inspected.visibility !== visibility) {
@@ -99,6 +115,38 @@ export async function listSecretMetadata({ github, repository }) {
         repository,
         secrets: data.secrets.map(({ name, updated_at: updatedAt }) => ({ name, updatedAt })),
     };
+}
+
+export async function ensureDistributionReadme({ github, repository, branch, projectName }) {
+    validateRepository(repository);
+    if (typeof branch !== "string" || !branch) throw new Error("Distribution default branch is required");
+    if (typeof projectName !== "string" || !projectName.trim()) throw new Error("Project name is required for the distribution README");
+    const [, repositoryName] = repository.split("/");
+    const marker = "<!-- release-ops-managed-distribution-readme:v2 -->";
+    const desired = `${marker}\n# ${projectName} Releases\n\nThis repository distributes verified public release artifacts.\n\n- [Latest release](https://github.com/${repository}/releases/latest)\n- [Machine-readable latest.json](https://raw.githubusercontent.com/${repository}/${branch}/latest.json)\n\nRelease Ops manages this README and the release metadata.\n`;
+    const apiPath = `/repos/${repository}/contents/README.md`;
+    const existing = await github.request(`${apiPath}?ref=${encodeURIComponent(branch)}`, { allowNotFound: true });
+    let current = null;
+    if (existing.data?.content && existing.data?.encoding === "base64") {
+        current = Buffer.from(existing.data.content.replaceAll(/\s/gu, ""), "base64").toString("utf8");
+    } else if (existing.data) {
+        throw new Error("GitHub returned unreadable distribution README metadata");
+    }
+    if (current === desired) return { schemaVersion: "release-ops-distribution-readme/v2", repository, updated: false };
+    const autoInitialized = current === `# ${repositoryName}\n` || current === `# ${repositoryName}\r\n`;
+    if (current !== null && !current.includes(marker) && !autoInitialized) {
+        throw new Error("Distribution README is project-owned and cannot be replaced automatically");
+    }
+    await github.request(apiPath, {
+        method: "PUT",
+        json: {
+            message: "docs: initialize public release repository",
+            content: Buffer.from(desired, "utf8").toString("base64"),
+            branch,
+            ...(existing.data?.sha ? { sha: existing.data.sha } : {}),
+        },
+    });
+    return { schemaVersion: "release-ops-distribution-readme/v2", repository, updated: true };
 }
 
 async function main() {

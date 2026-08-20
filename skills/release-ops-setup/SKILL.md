@@ -1,42 +1,32 @@
 ---
 name: release-ops-setup
-description: Configure, adopt, audit, or upgrade a reproducible release pipeline for a local project, including optional GitHub hosting and installed quality providers. Use for new or existing projects; do not use to publish an already-configured release.
+description: Inspect, plan, apply, or audit a reproducible release pipeline for a new or existing project, including explicit GitHub and optional provider decisions. Use for setup and migration; do not use to publish a release.
 ---
 
 # Release Ops Setup
 
-Treat release publication as the core workflow. Quality systems such as Sentry are optional providers.
+Release publication is the core workflow. Sentry and future quality systems are optional providers and are never enabled from detection or defaults.
 
-## Start
+## Route
 
-1. Inspect the repository, build system, canonical version source, signing requirements, current remotes, visibility, workflows, and release artifacts.
+1. Read the target repository's root instructions and [the setup SOP](../../docs/getting-started.md).
 2. Run `node ../../scripts/release-ops.mjs inspect --root <repo>` from this skill directory.
-3. If `.release-ops/config.json` exists, use `audit` or `upgrade`; otherwise use `init` or `adopt-github`.
-4. Read [references/adapters.md](references/adapters.md) for the detected build adapter and [references/provider-contract.md](references/provider-contract.md) before enabling a provider.
+3. Read only the detected or selected adapter page linked by the inspect result. If detection is ambiguous, ask which build root/adapter is authoritative. If Unreal is detected, report it as unsupported and stop workflow generation.
+4. Ask whether to use GitHub. For GitHub, ask existing versus create; ask visibility only for create. Verify existing repository visibility and default branch through GitHub. A private source also requires a public distribution repository decision.
+5. Always ask for one explicit provider selection, including when the repository already has a provider SDK, workflow, config, or Secret metadata. Offer only `None` and providers listed by inspect. Do not preselect Sentry.
+6. Read a provider page under [the provider index](../../docs/providers/README.md) only after the user selects it. One provider selection authorizes its implemented setup capabilities; do not ask capability-by-capability questions.
 
-When implementing a new provider rather than configuring an installed one, also read [references/developing-providers.md](references/developing-providers.md).
+## Plan And Apply
 
-## Required Decisions
-
-Ask only decisions that cannot be discovered:
-
-- Whether the project should use GitHub at all.
-- Whether to use an existing repository or create one; verify existing visibility through GitHub.
-- The requested visibility for a new repository.
-- For a private source repository, the public distribution repository name.
-- Whether to enable one of the installed providers. In v1, offer only `None` and `Sentry`.
-
-Do not present performance, vulnerability, or custom-command providers until an actual provider implementation is installed.
-
-## Apply
-
-- Default to a dry-run plan. Apply only after repository identity and hosting decisions are explicit.
-- Public GitHub repositories use `same-repository` releases.
-- Private GitHub repositories use `dual-repository`: retain a private source Release and publish identical locally-built bytes to a dedicated public repository.
-- GitHub-disabled projects receive local build, signing, hashing, and packaging support only.
-- Never write credentials to configuration, tracked files, command arguments, or output.
-- Do not overwrite a managed file that differs from its recorded hash. Stop and merge deliberately.
+- Build commands use `executable + args`; never convert a project command into a shell string.
+- Keep canonical version separate from platform build numbers. Use a platform build unit and the adapter-declared runner for each target.
+- Write `release-ops/setup-answers/v2` without credential values, then run `plan`. Present repository identities, required Secret names, managed add/update/delete operations, conflicts, residual risks, and the exact SHA-256 digest.
+- Apply only after the user confirms that exact plan. Run `apply --plan <file> --confirm <digest>`; do not substitute another plan or bypass digest validation.
+- `release-ops/config/v1` is incompatible. Reinitialize it through the same explicit decisions; do not translate it silently.
+- A changed managed file is a stop condition. Preserve the project edit and merge deliberately before generating a new plan.
 
 ## Finish
 
-Run `audit`, the generated repository tests, and checks proportional to the selected build adapter. Report local build, GitHub hosting, publication, and provider status independently.
+Run `audit` and adapter-specific checks. `remoteVerified:false` is not success. Report configuration, local build, GitHub hosting, publication readiness, provider upload, and incident resolution independently.
+
+Setup never authorizes a Release, version bump, push, or incident closure.

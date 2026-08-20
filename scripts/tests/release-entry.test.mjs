@@ -1,63 +1,45 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
 import { auditReleaseEntry } from "../release-entry.mjs";
+import { baseConfig, fixtureRoot } from "./fixtures.mjs";
 
 const sha = "d".repeat(40);
 
-async function fixture() {
-    const root = await mkdtemp(join(tmpdir(), "release-ops-entry-"));
-    await mkdir(join(root, "docs"));
-    await writeFile(join(root, "version.properties"), "VERSION=1.2.3\nCODE=8\n", "utf8");
-    await writeFile(join(root, "docs", "v1.2.3.md"), "Release notes\n", "utf8");
-    return root;
-}
-
 function config() {
-    return {
-        build: { requiredSecretNames: ["SIGNING_KEY"] },
-        versioning: {
-            file: "version.properties",
-            reader: "properties",
-            versionKey: "VERSION",
-            codeKey: "CODE",
-            changelogPattern: "docs/v{version}.md",
-        },
-        hosting: { github: { sourceRepository: "owner/example", defaultBranch: "main", releaseMode: "dual-repository" } },
-        providers: { sentry: { enabled: true } },
-    };
+    const value = structuredClone(baseConfig({ sentry: true }));
+    value.build.units[0].requiredSecretNames = ["SIGNING_KEY"];
+    return value;
 }
 
-test("release entry binds a clean local HEAD to remote and Secret metadata", async () => {
-    const root = await fixture();
-    const gitImpl = (ignoredRoot, args) => {
-        const command = args.join(" ");
-        if (command === "status --porcelain") return "";
-        if (command === "branch --show-current") return "main";
-        if (command === "rev-parse HEAD") return sha;
-        if (command.startsWith("ls-remote")) return `${sha}\trefs/heads/main`;
-        throw new Error(command);
-    };
-    const github = {
-        request: async () => ({ data: { secrets: [
-            { name: "SIGNING_KEY", updated_at: "now" },
-            { name: "RELEASE_REPO_TOKEN", updated_at: "now" },
-            { name: "SENTRY_ORG_CI_TOKEN", updated_at: "now" },
-        ] } }),
-    };
-    const result = await auditReleaseEntry({ config: config(), root, version: "1.2.3", versionCode: 8, github, gitImpl });
+function gitFixture(ignoredRoot, args) {
+    const command = args.join(" ");
+    if (command === "status --porcelain") return "";
+    if (command === "branch --show-current") return "main";
+    if (command === "rev-parse HEAD") return sha;
+    if (command.startsWith("ls-remote")) return `${sha}\trefs/heads/main`;
+    throw new Error(command);
+}
+
+test("release entry binds canonical version/build numbers to remote HEAD and Secret metadata", async () => {
+    const root = await fixtureRoot("release-ops-entry-");
+    const github = { request: async () => ({ data: { secrets: [
+        { name: "SIGNING_KEY", updated_at: "now" },
+        { name: "RELEASE_REPO_TOKEN", updated_at: "now" },
+        { name: "SENTRY_ORG_CI_TOKEN", updated_at: "now" },
+        { name: "SENTRY_AUTH_TOKEN", updated_at: "now" },
+        { name: "SENTRY_WRITE_TOKEN", updated_at: "now" },
+    ] } }) };
+    const result = await auditReleaseEntry({ config: config(), root, version: "1.2.3", github, gitImpl: gitFixture });
     assert.equal(result.sourceSha, sha);
+    assert.deepEqual(result.buildNumbers, { windows: 9 });
 });
 
-test("release entry refuses missing Secret metadata", async () => {
-    const root = await fixture();
-    const gitImpl = (ignoredRoot, args) => args[0] === "status" ? "" : args[0] === "branch" ? "main" : args[0] === "rev-parse" ? sha : `${sha}\trefs/heads/main`;
+test("release entry refuses missing build and publication Secret metadata", async () => {
+    const root = await fixtureRoot("release-ops-entry-missing-");
     const github = { request: async () => ({ data: { secrets: [] } }) };
     await assert.rejects(
-        auditReleaseEntry({ config: config(), root, version: "1.2.3", versionCode: 8, github, gitImpl }),
+        auditReleaseEntry({ config: config(), root, version: "1.2.3", github, gitImpl: gitFixture }),
         /RELEASE_REPO_TOKEN.*SENTRY_ORG_CI_TOKEN.*SIGNING_KEY/u,
     );
 });

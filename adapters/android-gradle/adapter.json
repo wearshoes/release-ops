@@ -1,0 +1,1 @@
+{"schemaVersion":"release-ops/adapter/v2","id":"android-gradle","status":"supported","docs":"docs/stacks/android.md","detects":["gradlew","build.gradle.kts","build.gradle"],"artifactTypes":["apk","aab"],"debugArtifactTypes":["proguard","dif"],"targets":[{"id":"android","runner":"ubuntu-latest"}]}

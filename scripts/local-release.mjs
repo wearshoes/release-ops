@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.mjs";
 import { publishRelease } from "./release-publisher.mjs";
+import { readCanonicalVersion } from "./release-publisher.mjs";
 import { runBuild } from "./run-build.mjs";
 import { planSentryBuildHook, runSentryBuildHook } from "./sentry-build-hook.mjs";
 
@@ -16,11 +17,26 @@ async function main() {
     const config = await loadConfig(root);
     if (config.hosting.github.enabled) throw new Error("Use the repository release entry for GitHub-hosted projects");
     const version = args.get("--version") ?? "";
-    const versionCode = args.has("--code") && args.get("--code") !== "" ? Number(args.get("--code")) : null;
     const sourceSha = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    await runBuild(config, { root });
-    await runSentryBuildHook(planSentryBuildHook(config, { root, version, versionCode, sourceSha }));
-    const result = await publishRelease({ config, root, version, versionCode, sourceSha });
+    const canonical = await readCanonicalVersion(config, root);
+    for (const unit of config.build.units) {
+        await runBuild(config, { root, unitId: unit.id });
+        await runSentryBuildHook(await planSentryBuildHook(config, {
+            root,
+            version,
+            buildNumbers: canonical.buildNumbers,
+            sourceSha,
+            unitId: unit.id,
+        }));
+    }
+    await runSentryBuildHook(await planSentryBuildHook(config, {
+        root,
+        version,
+        buildNumbers: canonical.buildNumbers,
+        sourceSha,
+        mode: "release",
+    }));
+    const result = await publishRelease({ config, root, version, buildNumbers: canonical.buildNumbers, sourceSha });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
