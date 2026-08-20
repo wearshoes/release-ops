@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sentry Issue Repair"
+  short_description: "Repair a sanitized Sentry-generated Issue"
+  default_prompt: "Use $sentry-issue-repair to diagnose and fix one automated Sentry Issue."

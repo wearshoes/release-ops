@@ -1,0 +1,30 @@
+name: Resolve Commit Issues
+
+on:
+  push:
+    branches:
+      - __DEFAULT_BRANCH__
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  resolve:
+    if: github.repository == '__SOURCE_REPOSITORY__'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Verify incident resolution runtime
+        run: node --test .release-ops/runtime/tests/sentry-lifecycle.test.mjs
+      - name: Resolve explicitly bound Issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_WRITE_TOKEN: ${{ secrets.SENTRY_WRITE_TOKEN }}
+        run: node .release-ops/runtime/sentry-resolver.mjs --root .

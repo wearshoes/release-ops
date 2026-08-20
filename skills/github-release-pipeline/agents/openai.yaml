@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Release Pipeline"
+  short_description: "Audit or publish a configured release"
+  default_prompt: "Use $github-release-pipeline to audit and publish the configured current version."

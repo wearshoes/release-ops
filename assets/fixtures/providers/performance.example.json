@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "release-ops/provider/v1",
+  "id": "example-performance-provider",
+  "category": "performance",
+  "installed": false,
+  "capabilities": ["configure", "audit", "requiredSecrets", "buildHooks", "scheduledIngest"]
+}

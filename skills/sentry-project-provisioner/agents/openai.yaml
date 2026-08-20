@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sentry Project Provisioner"
+  short_description: "Provision the optional Sentry provider"
+  default_prompt: "Use $sentry-project-provisioner to provision Sentry for this Release Ops project."

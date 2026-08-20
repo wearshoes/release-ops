@@ -1,0 +1,54 @@
+name: Publish Release
+run-name: Release v${{ inputs.versionName }} from ${{ inputs.sourceSha }} [${{ inputs.correlation }}]
+
+on:
+  workflow_dispatch:
+    inputs:
+      versionName:
+        required: true
+        type: string
+      versionCode:
+        required: false
+        type: string
+      sourceSha:
+        required: true
+        type: string
+      correlation:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-ops-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == '__SOURCE_REPOSITORY__'
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+__SECRET_ENV__
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.sourceSha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Verify release inputs
+        run: >-
+          node .release-ops/runtime/preflight-release.mjs
+          --root . --version "${{ inputs.versionName }}"
+          --code "${{ inputs.versionCode }}" --sha "${{ inputs.sourceSha }}"
+      - name: Build once
+        run: node .release-ops/runtime/run-build.mjs --root .
+__SENTRY_STEP__
+      - name: Publish local artifacts
+        run: >-
+          node .release-ops/runtime/release-publisher.mjs
+          --root . --version "${{ inputs.versionName }}"
+          --code "${{ inputs.versionCode }}" --sha "${{ inputs.sourceSha }}"

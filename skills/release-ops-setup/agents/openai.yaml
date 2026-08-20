@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Ops Setup"
+  short_description: "Configure or audit a release pipeline"
+  default_prompt: "Use $release-ops-setup to configure a reproducible release pipeline for this project."
