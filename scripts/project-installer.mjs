@@ -40,6 +40,13 @@ function sha256(bytes) {
     return createHash("sha256").update(bytes).digest("hex");
 }
 
+export function normalizeManagedTextBytes(value) {
+    const text = Buffer.isBuffer(value)
+        ? new TextDecoder("utf-8", { fatal: true }).decode(value)
+        : String(value);
+    return Buffer.from(text.replace(/\r\n?/gu, "\n"), "utf8");
+}
+
 function yamlString(value) {
     return JSON.stringify(String(value));
 }
@@ -244,7 +251,7 @@ function templateValues(config) {
 
 async function desiredProjectFiles(config, { includeConfig = false } = {}) {
     const desired = new Map();
-    const add = (path, bytes) => desired.set(path.replaceAll("\\", "/"), Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes, "utf8"));
+    const add = (path, bytes) => desired.set(path.replaceAll("\\", "/"), normalizeManagedTextBytes(bytes));
     if (includeConfig) add(".release-ops/config.json", `${JSON.stringify(config, null, 2)}\n`);
     for (const name of CORE_RUNTIME_FILES) add(`.release-ops/runtime/${name}`, await readFile(resolve(PLUGIN_ROOT, "scripts", name)));
     for (const [id, adapter] of Object.entries(ADAPTERS)) {

@@ -6,12 +6,19 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { validateConfig } from "../config.mjs";
-import { installProjectFiles, planProjectFiles, renderPublishWorkflow } from "../project-installer.mjs";
+import { installProjectFiles, normalizeManagedTextBytes, planProjectFiles, renderPublishWorkflow } from "../project-installer.mjs";
 import { baseConfig, fixtureRoot } from "./fixtures.mjs";
 
 function sha256(value) {
     return createHash("sha256").update(value).digest("hex");
 }
+
+test("managed template bytes are checkout-independent UTF-8 with LF endings", () => {
+    const windowsCheckout = Buffer.from("first\r\n第二行\rlast\r\n", "utf8");
+    const unixCheckout = Buffer.from("first\n第二行\nlast\n", "utf8");
+    assert.deepEqual(normalizeManagedTextBytes(windowsCheckout), unixCheckout);
+    assert.equal(sha256(normalizeManagedTextBytes(windowsCheckout)), sha256(unixCheckout));
+});
 
 test("generated workflow scopes build, Sentry, and release Secrets to their steps", async () => {
     const config = structuredClone(baseConfig({ sentry: true }));
