@@ -127,7 +127,7 @@ def validate_extensions(version: str) -> None:
 
 def validate_files() -> None:
     required = [
-        "README.md", "LICENSE", ".agents/plugins/marketplace.json",
+        "README.md", "README.en.md", "LICENSE", ".agents/plugins/marketplace.json",
         "scripts/release-ops.mjs", "scripts/setup-core.mjs", "scripts/extension-registry.mjs",
         "scripts/processor-graph.mjs", "scripts/kernel-api.mjs", "scripts/workflow-renderer.mjs",
         "scripts/project-installer.mjs", "scripts/execute.mjs", "scripts/validate-boundaries.mjs",

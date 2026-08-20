@@ -99,8 +99,10 @@ test("machine schemas cover every public v1 contract", async () => {
 });
 
 test("README manifest generation is stable with LF and CRLF checkouts", async () => {
-    const readme = await readFile(join(ROOT, "README.md"), "utf8");
-    assert.equal(await renderReadme(readme), readme);
-    const crlf = readme.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
-    assert.equal(await renderReadme(crlf), crlf);
+    for (const [name, locale] of [["README.md", "zh"], ["README.en.md", "en"]]) {
+        const readme = await readFile(join(ROOT, name), "utf8");
+        assert.equal(await renderReadme(readme, locale), readme);
+        const crlf = readme.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
+        assert.equal(await renderReadme(crlf, locale), crlf);
+    }
 });
