@@ -1,14 +1,24 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { chmod } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.mjs";
 
-export async function runBuild(config, { root = process.cwd(), env = process.env, spawnImpl = spawn } = {}) {
+export async function runBuild(config, {
+    root = process.cwd(),
+    env = process.env,
+    spawnImpl = spawn,
+    chmodImpl = chmod,
+    platform = process.platform,
+} = {}) {
     for (const name of config.build.requiredSecretNames ?? []) {
         if (!env[name]) throw new Error(`Required build Secret is unavailable: ${name}`);
+    }
+    if (config.project.adapter === "android-gradle" && platform !== "win32") {
+        await chmodImpl(resolve(root, "gradlew"), 0o755);
     }
     await new Promise((resolvePromise, reject) => {
         const child = spawnImpl(config.build.command, {
