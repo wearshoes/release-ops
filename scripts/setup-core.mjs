@@ -2,11 +2,13 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { AUDIT_SCHEMA, CONFIG_SCHEMA, PLAN_SCHEMA, RELEASE_SCHEMA, loadConfig, validateConfig } from "./config.mjs";
 import { createRepository, ensureDistributionReadme, inspectRepository, listSecretMetadata } from "./github-admin.mjs";
 import { createGitHubClient } from "./github-client.mjs";
-import { BUILD_ADAPTERS, PROVIDERS, adapterById, adapterRequiredSecrets, providerChoices } from "./provider-registry.mjs";
+import { resolveRepositoryPath } from "./path-safety.mjs";
+import { BUILD_ADAPTERS, PROVIDERS, adapterById, adapterRequiredSecrets, loadProviderBuildHook, providerChoices } from "./provider-registry.mjs";
 import { installProjectFiles, planProjectFiles } from "./project-installer.mjs";
 
 export const ANSWERS_SCHEMA = "release-ops/setup-answers/v2";
@@ -516,12 +518,38 @@ export async function auditProject(root, {
             units: config.build.units.map(({ id, target, runner }) => ({ id, target, runner })),
             requiredSecretNames: buildSecretNames,
         };
-    for (const [id] of Object.entries(PROVIDERS)) {
+    if (!config.hosting.github.enabled) {
+        try {
+            const runtimeRoot = await resolveRepositoryPath(root, ".release-ops/runtime", {
+                name: "Release Ops runtime",
+                mustExist: true,
+            });
+            await import(pathToFileURL(join(runtimeRoot, "local-release.mjs")).href);
+            checks.releasePublication = { status: "configured", entrypoint: "loadable" };
+        } catch (error) {
+            checks.releasePublication = { status: "fail", reason: "local-entrypoint-unavailable", error: error.message };
+        }
+    }
+    for (const [id, provider] of Object.entries(PROVIDERS)) {
         const providerConfig = config.providers[id];
         if (!providerConfig?.enabled) checks.providers[id] = { status: "disabled" };
         else {
             const missing = required.filter(({ purpose }) => purpose.startsWith(`${id}:`)).map(({ name }) => name).filter((name) => !availableSecrets.has(name));
-            checks.providers[id] = missing.length ? { status: "fail", missingSecretMetadata: missing } : { status: "pass" };
+            let hookError = null;
+            if (provider.buildHook) {
+                try {
+                    const runtimeRoot = await resolveRepositoryPath(root, ".release-ops/runtime", {
+                        name: "Release Ops runtime",
+                        mustExist: true,
+                    });
+                    await loadProviderBuildHook(provider, { runtimeRoot });
+                } catch (error) {
+                    hookError = error.message;
+                }
+            }
+            checks.providers[id] = missing.length
+                ? { status: "fail", missingSecretMetadata: missing }
+                : hookError ? { status: "fail", reason: "build-hook-unavailable", error: hookError } : { status: "pass" };
             if (providerConfig.issueSync) checks.incidentResolution = missing.length ? { status: "fail" } : { status: "configured" };
         }
     }

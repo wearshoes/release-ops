@@ -15,6 +15,8 @@
 node .release-ops/runtime/local-release.mjs --root . --version 1.2.3
 ```
 
-入口依次构建每个 unit、运行 provider build hook、从本地产物计算 SHA-256，并写入 `release.localOutputDirectory/v<version>`。不从远端下载或回读产物。
+入口依次构建每个 unit、只按已启用 provider 的 manifest 动态加载并运行标准 build hook、从本地产物
+计算 SHA-256，并写入 `release.localOutputDirectory/v<version>`。选择 None 时不生成也不加载任何
+provider runtime；audit 会验证本地入口及已启用 hook 可加载。不从远端下载或回读产物。
 
 以后采用 GitHub 时重新执行 setup，明确选择 GitHub 仓库并生成新的 plan。

@@ -9,7 +9,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/wearshoes/release-ops.git",
-        "ref": "v1.0.1"
+        "ref": "v1.0.2"
       },
       "policy": {
         "installation": "AVAILABLE",

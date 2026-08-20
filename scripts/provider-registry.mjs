@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ADAPTER_SCHEMA = "release-ops/adapter/v2";
 export const PROVIDER_SCHEMA = "release-ops/provider/v2";
@@ -150,6 +150,16 @@ export function adapterById(id) {
 
 export function providerById(id) {
     return PROVIDERS[id] ?? null;
+}
+
+export async function loadProviderBuildHook(provider, { runtimeRoot = HERE } = {}) {
+    if (!provider?.buildHook) return null;
+    const path = resolve(runtimeRoot, provider.buildHook.script);
+    const module = await import(pathToFileURL(path).href);
+    if (typeof module.planBuildHook !== "function" || typeof module.runBuildHook !== "function") {
+        throw new Error(`Provider ${provider.id} build hook does not implement the provider/v2 module contract`);
+    }
+    return module;
 }
 
 export function adapterRequiredSecrets(config) {

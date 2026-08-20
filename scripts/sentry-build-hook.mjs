@@ -17,7 +17,7 @@ function applyTemplate(template, values) {
     });
 }
 
-export async function planSentryBuildHook(config, {
+export async function planBuildHook(config, {
     root = process.cwd(),
     version,
     buildNumbers = {},
@@ -70,7 +70,7 @@ export async function planSentryBuildHook(config, {
     return { schemaVersion: "release-ops-sentry-build-hook/v2", enabled: true, mode, unitId, release, dist, apiBase: sentry.apiBase, commands };
 }
 
-export async function runSentryBuildHook(plan, { env = process.env, exec = execFileAsync } = {}) {
+export async function runBuildHook(plan, { env = process.env, exec = execFileAsync } = {}) {
     if (!plan.enabled) return { ...plan, completed: true };
     const token = env.SENTRY_ORG_CI_TOKEN;
     if (!token) throw new Error("SENTRY_ORG_CI_TOKEN is required for the Sentry build hook");
@@ -87,6 +87,9 @@ export async function runSentryBuildHook(plan, { env = process.env, exec = execF
     return { schemaVersion: plan.schemaVersion, enabled: true, release: plan.release, dist: plan.dist, commandCount: plan.commands.length, completed: true };
 }
 
+export const planSentryBuildHook = planBuildHook;
+export const runSentryBuildHook = runBuildHook;
+
 async function main() {
     const args = new Map();
     for (let index = 2; index < process.argv.length; index += 2) {
@@ -97,7 +100,7 @@ async function main() {
     }
     const root = resolve(args.get("--root") ?? process.cwd());
     const config = await loadConfig(root);
-    const plan = await planSentryBuildHook(config, {
+    const plan = await planBuildHook(config, {
         root,
         version: args.get("--version") ?? "",
         buildNumbers: JSON.parse(args.get("--build-numbers") ?? "{}"),
@@ -105,7 +108,7 @@ async function main() {
         unitId: args.get("--unit") ?? null,
         mode: args.get("--mode") ?? "upload",
     });
-    const result = await runSentryBuildHook(plan);
+    const result = await runBuildHook(plan);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

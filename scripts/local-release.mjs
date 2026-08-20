@@ -7,8 +7,17 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.mjs";
 import { publishRelease } from "./release-publisher.mjs";
 import { readCanonicalVersion } from "./release-publisher.mjs";
+import { PROVIDERS, loadProviderBuildHook } from "./provider-registry.mjs";
 import { runBuild } from "./run-build.mjs";
-import { planSentryBuildHook, runSentryBuildHook } from "./sentry-build-hook.mjs";
+
+async function runProviderBuildHooks(config, options) {
+    for (const [id, providerConfig] of Object.entries(config.providers)) {
+        const provider = PROVIDERS[id];
+        if (!providerConfig.enabled || !provider?.buildHook) continue;
+        const hook = await loadProviderBuildHook(provider);
+        await hook.runBuildHook(await hook.planBuildHook(config, options));
+    }
+}
 
 async function main() {
     const args = new Map();
@@ -21,21 +30,21 @@ async function main() {
     const canonical = await readCanonicalVersion(config, root);
     for (const unit of config.build.units) {
         await runBuild(config, { root, unitId: unit.id });
-        await runSentryBuildHook(await planSentryBuildHook(config, {
+        await runProviderBuildHooks(config, {
             root,
             version,
             buildNumbers: canonical.buildNumbers,
             sourceSha,
             unitId: unit.id,
-        }));
+        });
     }
-    await runSentryBuildHook(await planSentryBuildHook(config, {
+    await runProviderBuildHooks(config, {
         root,
         version,
         buildNumbers: canonical.buildNumbers,
         sourceSha,
         mode: "release",
-    }));
+    });
     const result = await publishRelease({ config, root, version, buildNumbers: canonical.buildNumbers, sourceSha });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

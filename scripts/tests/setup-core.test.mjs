@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -58,7 +59,29 @@ test("v1 projects require a confirmed digest before transactional reinitializati
     await applySetupPlan(plan, plan.planDigest);
     assert.equal(JSON.parse(await readFile(join(root, ".release-ops", "config.json"), "utf8")).schemaVersion, "release-ops/config/v2");
     assert.equal(JSON.parse(await readFile(join(root, ".release-ops", "managed-files.json"), "utf8")).schemaVersion, "release-ops-managed-files/v2");
-    assert.equal((await auditProject(root, { token: null })).success, true);
+    const audit = await auditProject(root, { token: null });
+    assert.equal(audit.success, true);
+    assert.equal(audit.checks.releasePublication.entrypoint, "loadable");
+});
+
+test("a None-provider installation runs the managed local release entrypoint without provider runtime", async () => {
+    const root = await fixtureRoot("release-ops-none-local-release-");
+    const plan = await createSetupPlan(root, localAnswers(["none"]));
+    await applySetupPlan(plan, plan.planDigest);
+    await assert.rejects(access(join(root, ".release-ops", "runtime", "sentry-build-hook.mjs")), /ENOENT/u);
+    execFileSync("git", ["-C", root, "init", "-b", "main"], { stdio: "ignore" });
+    execFileSync("git", ["-C", root, "config", "user.name", "Release Ops Test"]);
+    execFileSync("git", ["-C", root, "config", "user.email", "release-ops@example.invalid"]);
+    execFileSync("git", ["-C", root, "add", "."]);
+    execFileSync("git", ["-C", root, "commit", "-m", "fixture"], { stdio: "ignore" });
+    const output = execFileSync(process.execPath, [
+        join(root, ".release-ops", "runtime", "local-release.mjs"), "--root", root, "--version", "1.2.3",
+    ], { encoding: "utf8" });
+    const result = JSON.parse(output);
+    assert.equal(result.mode, "local");
+    assert.equal(result.version, "1.2.3");
+    const manifest = JSON.parse(await readFile(join(result.outputRoot, "release-manifest.json"), "utf8"));
+    assert.equal(manifest.schemaVersion, "release-ops-release/v2");
 });
 
 test("one Sentry selection enables build hooks but not GitHub incident workflows when GitHub is disabled", async () => {
@@ -68,6 +91,10 @@ test("one Sentry selection enables build hooks but not GitHub incident workflows
     assert.equal(plan.config.providers.sentry.issueSync, false);
     assert.equal(plan.requiredSecrets.some(({ name }) => name === "SENTRY_ORG_CI_TOKEN"), true);
     assert.equal(plan.managedFiles.operations.some(({ path }) => path.includes("sentry-issues.yml")), false);
+    await applySetupPlan(plan, plan.planDigest);
+    const audit = await auditProject(root, { token: null, env: { SENTRY_ORG_CI_TOKEN: "present" } });
+    assert.equal(audit.success, true);
+    assert.equal(audit.checks.providers.sentry.status, "pass");
 });
 
 test("None cannot be combined with an installed provider", async () => {

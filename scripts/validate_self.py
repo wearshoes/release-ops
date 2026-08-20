@@ -28,8 +28,8 @@ def validate_manifest() -> None:
         fail("plugin name must be release-ops")
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", data.get("version", "")):
         fail("plugin version must use semantic versioning")
-    if data.get("version") != "1.0.1":
-        fail("public plugin version must be 1.0.1")
+    if data.get("version") != "1.0.2":
+        fail("public plugin version must be 1.0.2")
     if data.get("skills") != "./skills/":
         fail("plugin must expose ./skills/")
     if data.get("repository") != "https://github.com/wearshoes/release-ops":
@@ -56,9 +56,9 @@ def validate_marketplace() -> None:
     if plugin.get("source") != {
         "source": "url",
         "url": "https://github.com/wearshoes/release-ops.git",
-        "ref": "v1.0.1",
+        "ref": "v1.0.2",
     }:
-        fail("marketplace must install the immutable v1.0.1 plugin")
+        fail("marketplace must install the immutable v1.0.2 plugin")
     if plugin.get("policy") != {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
