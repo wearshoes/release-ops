@@ -40,6 +40,16 @@ test("Sentry upload and release plans use fixed sentry-cli operations", async ()
     assert.doesNotMatch(JSON.stringify({ upload, release }), /SENTRY_ORG_CI_TOKEN|token-value/u);
 });
 
+test("Sentry release templates can use validated adapter identifiers", async () => {
+    const config = structuredClone(baseConfig({ sentry: true }));
+    config.project.adapterOptions = { applicationId: "com.example.app" };
+    config.providers.sentry.releaseTemplate = "{applicationId}@{version}+{windows}";
+    const plan = await planSentryBuildHook(config, {
+        version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA, mode: "release",
+    });
+    assert.equal(plan.release, "com.example.app@1.2.3+9");
+});
+
 test("build hook passes only its CI credential to child commands", async () => {
     const root = await fixtureRoot("release-ops-sentry-env-");
     const plan = await planSentryBuildHook(baseConfig({ sentry: true }), {

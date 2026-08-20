@@ -337,7 +337,12 @@ function configFromAnswers(answers, hosting) {
 }
 
 function publicManagedPlan(plan) {
-    return { schemaVersion: plan.schemaVersion, operations: plan.operations, conflicts: plan.conflicts };
+    return {
+        schemaVersion: plan.schemaVersion,
+        operations: plan.operations,
+        conflicts: plan.conflicts,
+        adoptions: plan.adoptions,
+    };
 }
 
 export async function createSetupPlan(root, answers, {
@@ -350,7 +355,10 @@ export async function createSetupPlan(root, answers, {
     const config = configFromAnswers(answers, hosting);
     const adapter = adapterById(config.project.adapter);
     if (!adapter) throw new Error("Selected adapter is not installed");
-    const managed = await planProjectFiles(root, config, { includeConfig: true });
+    const managed = await planProjectFiles(root, config, {
+        includeConfig: true,
+        adoptions: answers.managedFileAdoptions ?? [],
+    });
     if (managed.conflicts.length) throw new Error(`Setup plan has managed file conflicts: ${managed.conflicts.map(({ path }) => path).join(", ")}`);
     const plan = {
         schemaVersion: PLAN_SCHEMA,
@@ -375,7 +383,10 @@ export async function applySetupPlan(plan, confirmation, {
     }
     const root = resolve(plan.root);
     const config = validateConfig(plan.config);
-    const preflight = await planProjectFiles(root, config, { includeConfig: true });
+    const preflight = await planProjectFiles(root, config, {
+        includeConfig: true,
+        adoptions: plan.managedFiles.adoptions ?? [],
+    });
     if (JSON.stringify(publicManagedPlan(preflight)) !== JSON.stringify(plan.managedFiles)) {
         throw new Error("Repository files changed after the confirmed setup plan");
     }
@@ -420,6 +431,7 @@ export async function applySetupPlan(plan, confirmation, {
     const managedFiles = await installProjectFiles(root, config, {
         includeConfig: true,
         expectedPlan: plan.managedFiles,
+        adoptions: plan.managedFiles.adoptions ?? [],
     });
     return {
         schemaVersion: "release-ops/apply-result/v2",

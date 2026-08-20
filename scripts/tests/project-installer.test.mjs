@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,6 +8,10 @@ import test from "node:test";
 import { validateConfig } from "../config.mjs";
 import { installProjectFiles, planProjectFiles, renderPublishWorkflow } from "../project-installer.mjs";
 import { baseConfig, fixtureRoot } from "./fixtures.mjs";
+
+function sha256(value) {
+    return createHash("sha256").update(value).digest("hex");
+}
 
 test("generated workflow scopes build, Sentry, and release Secrets to their steps", async () => {
     const config = structuredClone(baseConfig({ sentry: true }));
@@ -73,4 +78,77 @@ test("changed managed files and unmanaged workflows stop the whole transaction",
     await mkdir(join(other, ".github", "workflows"), { recursive: true });
     await writeFile(join(other, ".github", "workflows", "publish-release.yml"), "project-owned\n", "utf8");
     await assert.rejects(installProjectFiles(other, baseConfig()), /Managed file conflicts/u);
+});
+
+test("exact-hash adoption preserves a mature project workflow and keeps conflict protection", async () => {
+    const root = await fixtureRoot("release-ops-adopt-");
+    const workflowPath = join(root, ".github", "workflows", "publish-release.yml");
+    const workflow = "name: Project-owned compatible release\n";
+    await mkdir(join(root, ".github", "workflows"), { recursive: true });
+    await writeFile(workflowPath, workflow, "utf8");
+    const adoptions = [{
+        path: ".github/workflows/publish-release.yml",
+        owner: "release",
+        sha256: sha256(workflow),
+    }];
+
+    const initial = await planProjectFiles(root, baseConfig(), { adoptions });
+    assert.equal(initial.conflicts.length, 0);
+    assert.equal(initial.operations.find(({ path }) => path.endsWith("publish-release.yml")).operation, "unchanged");
+    await installProjectFiles(root, baseConfig(), { adoptions, expectedPlan: {
+        schemaVersion: initial.schemaVersion,
+        operations: initial.operations,
+        conflicts: initial.conflicts,
+        adoptions: initial.adoptions,
+    } });
+    assert.equal(await readFile(workflowPath, "utf8"), workflow);
+
+    const stable = await planProjectFiles(root, baseConfig());
+    assert.deepEqual(stable.adoptions, adoptions);
+    await writeFile(workflowPath, "name: Changed after adoption\n", "utf8");
+    const changed = await planProjectFiles(root, baseConfig());
+    assert.equal(changed.conflicts.some(({ path, reason }) => path.endsWith("publish-release.yml") && reason === "managed-file-changed"), true);
+});
+
+test("adoption is restricted to active managed workflows, matching owners, and exact current bytes", async () => {
+    const root = await fixtureRoot("release-ops-adopt-restricted-");
+    await assert.rejects(
+        planProjectFiles(root, baseConfig(), { adoptions: [{ path: "README.md", owner: "release", sha256: "0".repeat(64) }] }),
+        /not an active Release Ops workflow target/u,
+    );
+    await assert.rejects(
+        planProjectFiles(root, baseConfig(), { adoptions: [{
+            path: ".release-ops/runtime/run-build.mjs", owner: "release", sha256: "0".repeat(64),
+        }] }),
+        /not an active Release Ops workflow target/u,
+    );
+    await mkdir(join(root, ".github", "workflows"), { recursive: true });
+    await writeFile(join(root, ".github", "workflows", "publish-release.yml"), "name: Existing\n", "utf8");
+    await assert.rejects(
+        planProjectFiles(root, baseConfig(), { adoptions: [{
+            path: ".github/workflows/publish-release.yml", owner: "provider:sentry", sha256: sha256("name: Existing\n"),
+        }] }),
+        /owner does not match its workflow/u,
+    );
+    await assert.rejects(
+        planProjectFiles(root, baseConfig(), { adoptions: [{
+            path: ".github/workflows/publish-release.yml", owner: "release", sha256: "0".repeat(64),
+        }] }),
+        /SHA-256 does not match/u,
+    );
+});
+
+test("disabling a provider deletes its unchanged adopted workflows", async () => {
+    const root = await fixtureRoot("release-ops-adopt-delete-");
+    const target = join(root, ".github", "workflows", "sentry-issues.yml");
+    const workflow = "name: Project Sentry sync\n";
+    await mkdir(join(root, ".github", "workflows"), { recursive: true });
+    await writeFile(target, workflow, "utf8");
+    await installProjectFiles(root, baseConfig({ sentry: true }), { adoptions: [{
+        path: ".github/workflows/sentry-issues.yml",
+        owner: "provider:sentry",
+        sha256: sha256(workflow),
+    }] });
+    const plan = await planProjectFiles(root, baseConfig({ sentry: false }));
+    assert.equal(plan.operations.find(({ path }) => path === ".github/workflows/sentry-issues.yml").operation, "delete");
 });

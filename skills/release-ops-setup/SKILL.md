@@ -23,6 +23,7 @@ Release publication is the core workflow. Sentry and future quality systems are 
 - Write `release-ops/setup-answers/v2` without credential values, then run `plan`. Present repository identities, required Secret names, managed add/update/delete operations, conflicts, residual risks, and the exact SHA-256 digest.
 - Apply only after the user confirms that exact plan. Run `apply --plan <file> --confirm <digest>`; do not substitute another plan or bypass digest validation.
 - `release-ops/config/v1` is incompatible. Reinitialize it through the same explicit decisions; do not translate it silently.
+- Mature projects may preserve an existing equivalent managed workflow only through `managedFileAdoptions` with its exact current SHA-256 and matching `release` or `provider:<id>` owner. Never adopt runtime, configuration, or a path Release Ops would not generate for that owner.
 - A changed managed file is a stop condition. Preserve the project edit and merge deliberately before generating a new plan.
 
 ## Finish

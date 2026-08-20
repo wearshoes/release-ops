@@ -23,6 +23,10 @@ node <release-ops>/scripts/release-ops.mjs inspect --root <project>
 
 回答文件使用 `release-ops/setup-answers/v2`。build unit 的命令必须拆成 `executable` 和 `args`，canonical version 与各平台 build number 分开声明。文件中只写 Secret 名称，不写值。
 
+迁移成熟项目时，现有等价 workflow 只能通过 `managedFileAdoptions` 接管：提供目标路径、
+与该 workflow 匹配的 `release` 或 `provider:<id>` owner，以及当前 SHA-256。该机制不接受
+runtime、配置或任意额外目标，也不会放宽后续 managed-file 冲突检查。
+
 ## 3. Plan
 
 ```bash

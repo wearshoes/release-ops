@@ -38,11 +38,24 @@
     "managedFiles": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "operations", "conflicts"],
+      "required": ["schemaVersion", "operations", "conflicts", "adoptions"],
       "properties": {
         "schemaVersion": { "const": "release-ops-managed-plan/v2" },
         "operations": { "type": "array", "items": { "$ref": "#/$defs/managedOperation" } },
-        "conflicts": { "type": "array", "items": { "type": "object" } }
+        "conflicts": { "type": "array", "items": { "type": "object" } },
+        "adoptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "owner", "sha256"],
+            "properties": {
+              "path": { "$ref": "config.schema.json#/$defs/repositoryPath" },
+              "owner": { "type": "string", "pattern": "^(?:release|provider:[a-z0-9][a-z0-9-]{0,63})$" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
       }
     },
     "planDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }

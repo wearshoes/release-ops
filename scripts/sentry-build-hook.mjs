@@ -30,6 +30,7 @@ export async function planSentryBuildHook(config, {
     if (!["upload", "release"].includes(mode)) throw new Error("Sentry build hook mode must be upload or release");
     if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error("Sentry build hook requires a full lowercase source SHA");
     const values = {
+        ...(config.project.adapterOptions ?? {}),
         version,
         versionCode: Object.values(buildNumbers)[0] ?? "",
         ...buildNumbers,

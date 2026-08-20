@@ -26,6 +26,12 @@ function optionalString(value, name, pattern = null) {
     if (value !== null && value !== undefined) string(value, name, pattern);
 }
 
+function exactKeys(value, name, allowed) {
+    for (const key of Object.keys(value)) {
+        if (!allowed.has(key)) throw new Error(`${name}.${key} is not supported`);
+    }
+}
+
 function stringArray(value, name, pattern = null) {
     if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry || (pattern && !pattern.test(entry)))) {
         throw new Error(`${name} must be an array of valid strings`);
@@ -46,6 +52,7 @@ function noCredentialValues(value, path = "config") {
 
 function repositoryIdentity(value, name, visibility = null) {
     object(value, name);
+    exactKeys(value, name, new Set(["repository", "owner", "name", "visibility", "defaultBranch"]));
     string(value.repository, `${name}.repository`, REPOSITORY_PATTERN);
     string(value.owner, `${name}.owner`, /^[A-Za-z0-9_.-]+$/u);
     string(value.name, `${name}.name`, /^[A-Za-z0-9_.-]+$/u);
@@ -57,13 +64,15 @@ function repositoryIdentity(value, name, visibility = null) {
 
 function command(value, name) {
     object(value, name);
+    if (Object.hasOwn(value, "shell")) throw new Error(`${name}.shell is forbidden`);
+    exactKeys(value, name, new Set(["executable", "args"]));
     string(value.executable, `${name}.executable`);
     stringArray(value.args, `${name}.args`);
-    if (Object.hasOwn(value, "shell")) throw new Error(`${name}.shell is forbidden`);
 }
 
 function artifact(value, name) {
     object(value, name);
+    exactKeys(value, name, new Set(["id", "path", "nameTemplate", "contentType", "platform", "architecture"]));
     string(value.id, `${name}.id`, ID_PATTERN);
     assertRelativeRepositoryPath(value.path, `${name}.path`);
     string(value.nameTemplate, `${name}.nameTemplate`);
@@ -75,6 +84,7 @@ function artifact(value, name) {
 function buildUnit(value, index, adapter) {
     const name = `build.units[${index}]`;
     object(value, name);
+    exactKeys(value, name, new Set(["id", "target", "runner", "selfHostedReason", "command", "requiredSecretNames", "artifacts"]));
     string(value.id, `${name}.id`, ID_PATTERN);
     string(value.target, `${name}.target`, ID_PATTERN);
     string(value.runner, `${name}.runner`, /^(?:(?:ubuntu|windows|macos)-(?:latest|\d+(?:\.\d+)?)|self-hosted)$/u);
@@ -100,6 +110,7 @@ function buildUnit(value, index, adapter) {
 
 function versionSource(value, name) {
     object(value, name);
+    exactKeys(value, name, new Set(["file", "reader", "key"]));
     assertRelativeRepositoryPath(value.file, `${name}.file`);
     if (!["properties", "json", "text", "gradle-properties", "package-json", "pubspec", "godot", "unity"].includes(value.reader)) {
         throw new Error(`${name}.reader is unsupported`);
@@ -113,6 +124,12 @@ function validateProviderConfig(id, provider, githubEnabled) {
     object(provider, `providers.${id}`);
     if (typeof provider.enabled !== "boolean") throw new Error(`providers.${id}.enabled must be boolean`);
     if (provider.schemaVersion !== manifest.configSchemaVersion) throw new Error(`providers.${id}.schemaVersion is unsupported`);
+    if (id === "sentry") {
+        exactKeys(provider, "providers.sentry", new Set(provider.enabled ? [
+            "schemaVersion", "enabled", "organization", "project", "apiBase", "issueSync", "lookbackMinutes", "schedule",
+            "releaseTemplate", "distTemplate", "debugArtifacts",
+        ] : ["schemaVersion", "enabled"]));
+    }
     if (!provider.enabled) return;
     if (id === "sentry") {
         string(provider.organization, "providers.sentry.organization", /^[A-Za-z0-9_-]+$/u);
@@ -133,6 +150,7 @@ function validateProviderConfig(id, provider, githubEnabled) {
         if (!Array.isArray(provider.debugArtifacts ?? [])) throw new Error("providers.sentry.debugArtifacts must be an array");
         for (const [index, debugArtifact] of (provider.debugArtifacts ?? []).entries()) {
             object(debugArtifact, `providers.sentry.debugArtifacts[${index}]`);
+            exactKeys(debugArtifact, `providers.sentry.debugArtifacts[${index}]`, new Set(["type", "path", "unit"]));
             assertRelativeRepositoryPath(debugArtifact.path, `providers.sentry.debugArtifacts[${index}].path`);
             if (!["proguard", "source-map", "dif", "dart-symbol", "bcsymbolmap", "breakpad", "dsym", "elf", "jvm", "pdb", "pe", "portablepdb", "sourcebundle", "wasm"].includes(debugArtifact.type)) {
                 throw new Error(`providers.sentry.debugArtifacts[${index}].type is unsupported`);
@@ -144,9 +162,11 @@ function validateProviderConfig(id, provider, githubEnabled) {
 
 export function validateConfig(config) {
     object(config, "config");
+    exactKeys(config, "config", new Set(["schemaVersion", "project", "build", "versioning", "hosting", "release", "providers"]));
     noCredentialValues(config);
     if (config.schemaVersion !== CONFIG_SCHEMA) throw new Error(`schemaVersion must be ${CONFIG_SCHEMA}`);
     object(config.project, "project");
+    exactKeys(config.project, "project", new Set(["name", "adapter", "adapterOptions"]));
     string(config.project.name, "project.name");
     string(config.project.adapter, "project.adapter", ID_PATTERN);
     const adapter = adapterById(config.project.adapter);
@@ -167,14 +187,18 @@ export function validateConfig(config) {
     }
 
     object(config.build, "build");
+    exactKeys(config.build, "build", new Set(["units"]));
     if (!Array.isArray(config.build.units) || !config.build.units.length) throw new Error("build.units must not be empty");
     config.build.units.forEach((unit, index) => buildUnit(unit, index, adapter));
     if (new Set(config.build.units.map(({ id }) => id)).size !== config.build.units.length) throw new Error("build unit ids must be unique");
 
     object(config.versioning, "versioning");
+    exactKeys(config.versioning, "versioning", new Set(["canonical", "buildNumbers", "changelogPattern", "requiresChinese"]));
     versionSource(config.versioning.canonical, "versioning.canonical");
     if (!Array.isArray(config.versioning.buildNumbers ?? [])) throw new Error("versioning.buildNumbers must be an array");
     (config.versioning.buildNumbers ?? []).forEach((entry, index) => {
+        object(entry, `versioning.buildNumbers[${index}]`);
+        exactKeys(entry, `versioning.buildNumbers[${index}]`, new Set(["id", "source"]));
         string(entry.id, `versioning.buildNumbers[${index}].id`, ID_PATTERN);
         versionSource(entry.source, `versioning.buildNumbers[${index}].source`);
     });
@@ -182,7 +206,9 @@ export function validateConfig(config) {
     if (typeof config.versioning.requiresChinese !== "boolean") throw new Error("versioning.requiresChinese must be boolean");
 
     object(config.hosting, "hosting");
+    exactKeys(config.hosting, "hosting", new Set(["github"]));
     object(config.hosting.github, "hosting.github");
+    exactKeys(config.hosting.github, "hosting.github", new Set(["enabled", "source", "distribution", "releaseMode"]));
     const github = config.hosting.github;
     if (typeof github.enabled !== "boolean") throw new Error("hosting.github.enabled must be boolean");
     if (github.enabled) {
@@ -201,6 +227,10 @@ export function validateConfig(config) {
     }
 
     object(config.release, "release");
+    exactKeys(config.release, "release", new Set([
+        "workflowFile", "tagTemplate", "titleTemplate", "manifestSchema", "publicReadmeSource", "publicReadmeTarget",
+        "latestManifest", "latestCompatibility", "latestBuildNumberId", "minimumSupportedVersionCode", "localOutputDirectory",
+    ]));
     assertRelativeRepositoryPath(config.release.workflowFile, "release.workflowFile");
     string(config.release.tagTemplate, "release.tagTemplate");
     string(config.release.titleTemplate, "release.titleTemplate");

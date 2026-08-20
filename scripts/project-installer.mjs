@@ -284,7 +284,48 @@ function normalizePrevious(previous) {
     return result;
 }
 
-export async function planProjectFiles(root, config, { includeConfig = false } = {}) {
+function normalizeAdoptions(adoptions) {
+    if (!Array.isArray(adoptions)) throw new Error("Managed file adoptions must be an array");
+    const result = new Map();
+    for (const adoption of adoptions) {
+        if (!adoption || typeof adoption !== "object" || Array.isArray(adoption)) throw new Error("Managed file adoption must be an object");
+        if (Object.keys(adoption).some((key) => !["path", "owner", "sha256"].includes(key))) {
+            throw new Error("Managed file adoption contains an unsupported field");
+        }
+        const { path, owner, sha256: expectedHash } = adoption;
+        if (typeof path !== "string" || !path || path.includes("\\")) throw new Error("Managed file adoption path is invalid");
+        if (owner !== "release" && !/^provider:[a-z0-9][a-z0-9-]{0,63}$/u.test(owner ?? "")) {
+            throw new Error("Managed file adoption owner is invalid");
+        }
+        if (!/^[0-9a-f]{64}$/u.test(expectedHash ?? "")) throw new Error("Managed file adoption SHA-256 is invalid");
+        if (result.has(path)) throw new Error(`Managed file adoption is duplicated: ${path}`);
+        result.set(path, { path, owner, sha256: expectedHash });
+    }
+    return result;
+}
+
+function adoptableWorkflowOwners(config) {
+    const result = new Map();
+    const add = (path, owner) => {
+        const normalized = path.replaceAll("\\", "/");
+        if (result.has(normalized) && result.get(normalized) !== owner) {
+            throw new Error(`Managed workflow has conflicting owners: ${normalized}`);
+        }
+        result.set(normalized, owner);
+    };
+    if (config.hosting.github.enabled) add(config.release.workflowFile, "release");
+    for (const [id, providerConfig] of Object.entries(config.providers)) {
+        const provider = PROVIDERS[id];
+        if (!providerConfig.enabled || !provider) continue;
+        for (const managed of provider.managedFiles ?? []) {
+            if (managed.requiresIssueSync && !providerConfig.issueSync) continue;
+            add(managed.target, `provider:${id}`);
+        }
+    }
+    return result;
+}
+
+export async function planProjectFiles(root, config, { includeConfig = false, adoptions = [] } = {}) {
     const manifestPath = resolve(root, ".release-ops", "managed-files.json");
     let previous = null;
     try {
@@ -294,14 +335,39 @@ export async function planProjectFiles(root, config, { includeConfig = false } =
     }
     const previousFiles = normalizePrevious(previous);
     const desired = await desiredProjectFiles(config, { includeConfig });
+    const workflowOwners = adoptableWorkflowOwners(config);
+    const requestedAdoptions = normalizeAdoptions(adoptions);
+    for (const [path, adoption] of requestedAdoptions) {
+        if (!desired.has(path) || !workflowOwners.has(path)) {
+            throw new Error(`Managed file adoption is not an active Release Ops workflow target: ${path}`);
+        }
+        if (workflowOwners.get(path) !== adoption.owner) {
+            throw new Error(`Managed file adoption owner does not match its workflow: ${path}`);
+        }
+    }
     const paths = [...new Set([...Object.keys(previousFiles), ...desired.keys()])].sort();
     const operations = [];
     const conflicts = [];
+    const activeAdoptions = new Map();
     for (const path of paths) {
         const current = await existingBytes(root, path);
         const currentHash = current ? sha256(current) : null;
+        const requestedAdoption = requestedAdoptions.get(path);
+        const previousAdoption = previousFiles[path]?.mode === "adopted" && workflowOwners.get(path) === previousFiles[path].owner
+            ? { path, owner: previousFiles[path].owner, sha256: previousFiles[path].desiredHash }
+            : null;
+        const adoption = requestedAdoption ?? previousAdoption;
+        if (requestedAdoption && currentHash !== requestedAdoption.sha256) {
+            throw new Error(`Managed file adoption SHA-256 does not match: ${path}`);
+        }
+        if (adoption && desired.has(path)) {
+            activeAdoptions.set(path, adoption);
+            if (currentHash === adoption.sha256) desired.set(path, current);
+        }
         const desiredBytes = desired.get(path) ?? null;
-        const desiredHash = desiredBytes ? sha256(desiredBytes) : null;
+        const desiredHash = adoption && desired.has(path) && currentHash !== adoption.sha256
+            ? adoption.sha256
+            : desiredBytes ? sha256(desiredBytes) : null;
         const previousHash = previousFiles[path]?.desiredHash ?? null;
         let operation = "unchanged";
         if (desiredHash === currentHash) operation = "unchanged";
@@ -318,18 +384,30 @@ export async function planProjectFiles(root, config, { includeConfig = false } =
         }
         operations.push({ path, operation, baseHash: previousHash, currentHash, desiredHash });
     }
-    return { schemaVersion: "release-ops-managed-plan/v2", operations, conflicts, desired };
+    return {
+        schemaVersion: "release-ops-managed-plan/v2",
+        operations,
+        conflicts,
+        desired,
+        adoptions: [...activeAdoptions.values()].sort((left, right) => left.path.localeCompare(right.path)),
+    };
 }
 
 function publicPlan(plan) {
-    return { schemaVersion: plan.schemaVersion, operations: plan.operations, conflicts: plan.conflicts };
+    return {
+        schemaVersion: plan.schemaVersion,
+        operations: plan.operations,
+        conflicts: plan.conflicts,
+        adoptions: plan.adoptions,
+    };
 }
 
 export async function installProjectFiles(root, config, {
     includeConfig = false,
     expectedPlan = null,
+    adoptions = [],
 } = {}) {
-    const plan = await planProjectFiles(root, config, { includeConfig });
+    const plan = await planProjectFiles(root, config, { includeConfig, adoptions });
     if (plan.conflicts.length) throw new Error(`Managed file conflicts: ${plan.conflicts.map(({ path }) => path).join(", ")}`);
     if (expectedPlan && JSON.stringify(publicPlan(plan)) !== JSON.stringify(expectedPlan)) {
         throw new Error("Managed file state changed after the confirmed setup plan");
@@ -346,7 +424,13 @@ export async function installProjectFiles(root, config, {
         files: Object.fromEntries([...plan.desired.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([path, bytes]) => {
             const operation = plan.operations.find((entry) => entry.path === path);
             const hash = sha256(bytes);
-            return [path, { baseHash: operation?.currentHash ?? null, currentHash: hash, desiredHash: hash }];
+            const adoption = plan.adoptions.find((entry) => entry.path === path);
+            return [path, {
+                baseHash: operation?.currentHash ?? null,
+                currentHash: hash,
+                desiredHash: hash,
+                ...(adoption ? { mode: "adopted", owner: adoption.owner } : {}),
+            }];
         })),
     };
     for (const operation of changed.filter(({ desiredHash }) => desiredHash)) {

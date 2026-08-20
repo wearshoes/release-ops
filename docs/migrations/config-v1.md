@@ -9,4 +9,10 @@
 5. 生成 plan，核对旧 managed 文件的 update/delete 和 SHA-256，再确认 apply。
 6. 运行完整 audit 与该技术栈的聚焦测试。
 
+成熟项目已经存在等价但项目定制的发布或 provider workflow 时，可以在 answers 中加入
+`managedFileAdoptions`。每项必须给出目标路径、`release` 或 `provider:<id>` owner，以及当前
+文件的完整 SHA-256。只能接管本次配置本来就会生成且 owner 匹配的 workflow，不能接管
+runtime 或配置；摘要会纳入 plan digest。接管后 Plugin 保留当前字节，后续人工修改仍作为
+整体事务冲突，禁用对应 provider 时仍事务删除。
+
 Apply 只允许在 plan 捕获的旧配置哈希未变化时替换 `config/v1`。项目自有 workflow 或已人工修改的 managed file 不会被静默覆盖。
