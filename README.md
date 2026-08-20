@@ -5,7 +5,7 @@
 
 Release Ops 是面向 Codex 的可复现发布 Plugin。Kernel 只负责 extension 注册、processor graph、权限、事务、结构化 workflow、审计和执行；技术栈、签名、发布目标及 Sentry 行为由内置 extension 提供。
 
-项目配置位于 `.release-ops/config.json`，唯一格式为 `release-ops/config/v1`。配置只保存项目名和 extension 实例，不保存路径推导状态、processor graph、生成状态或凭据值。旧 `release-ops/config/v2` 不提供转换器，必须显式 `reinitialize`。
+项目配置位于 `.release-ops/config.json`，唯一格式为 `release-ops/config/v1`。配置只保存项目名和 extension 实例，不保存路径推导状态、processor graph、生成状态或凭据值。
 
 ## 快速开始
 
@@ -17,7 +17,7 @@ node scripts/release-ops.mjs inspect --root <repository>
 
 初始化流程是 `inspect -> plan --mode initialize -> apply --confirm <digest> -> audit`。合法 `/v1` 默认只进入 audit；显式 `reconfigure` 会把当前值作为默认值，`reinitialize` 不继承 GitHub 或 provider 决策。初始化授权不等于发版授权。
 
-详见[初始化与迁移](docs/getting-started.md)和[`/v2` reinitialize](docs/migrations/config-v2.md)。
+详见[初始化、重新配置与审计](docs/getting-started.md)。
 
 ## Processor 数据流
 
@@ -82,7 +82,6 @@ Capability 支持 `one/many` 消费和 `exclusive/append/keyed` 合并。缺失�
 - [Signing extensions](docs/signing/README.md)
 - [Provider extensions](docs/providers/README.md)
 - [Extension 开发契约](docs/extensions/developing.md)
-- [`config/v2` 破坏性迁移](docs/migrations/config-v2.md)
 
 ## 开发验证
 
