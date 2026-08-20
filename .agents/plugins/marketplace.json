@@ -1,0 +1,21 @@
+{
+  "name": "release-ops",
+  "interface": {
+    "displayName": "Release Ops"
+  },
+  "plugins": [
+    {
+      "name": "release-ops",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/wearshoes/release-ops.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

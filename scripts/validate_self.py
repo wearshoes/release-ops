@@ -32,6 +32,38 @@ def validate_manifest() -> None:
         fail("plugin must expose ./skills/")
     if data.get("repository") != "https://github.com/wearshoes/release-ops":
         fail("plugin repository metadata is invalid")
+    if data.get("homepage") != "https://github.com/wearshoes/release-ops#readme":
+        fail("plugin homepage metadata is invalid")
+    if data.get("license") != "MIT":
+        fail("plugin license metadata must be MIT")
+
+
+def validate_marketplace() -> None:
+    path = ROOT / ".agents" / "plugins" / "marketplace.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("name") != "release-ops":
+        fail("marketplace name must be release-ops")
+    if data.get("interface", {}).get("displayName") != "Release Ops":
+        fail("marketplace display name must be Release Ops")
+    plugins = data.get("plugins")
+    if not isinstance(plugins, list) or len(plugins) != 1:
+        fail("marketplace must expose exactly one plugin")
+    plugin = plugins[0]
+    if plugin.get("name") != "release-ops":
+        fail("marketplace plugin name must be release-ops")
+    if plugin.get("source") != {
+        "source": "url",
+        "url": "https://github.com/wearshoes/release-ops.git",
+        "ref": "main",
+    }:
+        fail("marketplace must install the plugin from the public main branch")
+    if plugin.get("policy") != {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+    }:
+        fail("marketplace policy is invalid")
+    if plugin.get("category") != "Developer Tools":
+        fail("marketplace category is invalid")
 
 
 def frontmatter(text: str) -> dict[str, str]:
@@ -63,6 +95,9 @@ def validate_skills() -> None:
 
 def validate_files() -> None:
     required = [
+        "README.md",
+        "LICENSE",
+        ".agents/plugins/marketplace.json",
         "scripts/release-ops.mjs",
         "scripts/release-entry.mjs",
         "scripts/release-publisher.mjs",
@@ -90,6 +125,7 @@ def validate_files() -> None:
 
 def main() -> int:
     validate_manifest()
+    validate_marketplace()
     validate_skills()
     validate_files()
     print("Release Ops plugin structure is valid")

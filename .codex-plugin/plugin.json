@@ -1,12 +1,14 @@
 {
   "name": "release-ops",
-  "version": "0.1.0+codex.20260820105550",
+  "version": "0.1.0+codex.20260820112652",
   "description": "Configure, audit, and run reproducible project releases with optional quality providers.",
   "author": {
     "name": "wearshoes",
     "url": "https://github.com/wearshoes"
   },
+  "homepage": "https://github.com/wearshoes/release-ops#readme",
   "repository": "https://github.com/wearshoes/release-ops",
+  "license": "MIT",
   "keywords": [
     "release",
     "github-actions",
@@ -20,6 +22,7 @@
     "longDescription": "Release Ops configures local or GitHub-hosted release pipelines, private-to-public distribution, and optional quality providers such as Sentry.",
     "developerName": "wearshoes",
     "category": "Developer Tools",
+    "websiteURL": "https://github.com/wearshoes/release-ops",
     "capabilities": [
       "Read",
       "Write"
