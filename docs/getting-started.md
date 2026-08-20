@@ -1,59 +1,108 @@
-# 初始化与审计
+# 安装、初始化与审计
 
-所有命令都由已安装 Plugin 的 `scripts/release-ops.mjs` 提供。配置和 answer 文件只能保存 Secret 名称，不能保存凭据值。
+**中文** | [English](getting-started.en.md)
 
-## Inspect 路由
+Release Ops 通过 Codex 插件使用。普通用户不需要寻找或执行插件内部的 Node.js 脚本，也不需要手写 `.release-ops` 配置。
 
-```bash
-node scripts/release-ops.mjs inspect --root <repository>
+## 安装插件
+
+首次安装时，在终端执行：
+
+```powershell
+codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
+codex.cmd plugin add release-ops@release-ops
 ```
 
-- 配置缺失：只能 `initialize`。
-- 合法 `release-ops/config/v1`：默认 `audit`；显式 `reconfigure` 或 `reinitialize` 可进入只读问答路由。
-- 损坏、非法或 `release-ops/config/v2`：只能 `reinitialize`。
+已经添加过插件源时，更新并重新安装：
 
-`reconfigure` 以当前 `/v1` 值为默认。`reinitialize` 重新询问所有选择，不继承旧 GitHub topology 或 provider 决策。
-
-## 问答顺序
-
-1. stack 与 build unit
-2. signing
-3. release
-4. GitHub topology
-5. provider
-
-只有选中的 extension 才会 hydrate config schema、动态问题和文档。Unreal 只返回 unsupported diagnostic，不生成 graph。
-
-## Plan
-
-Answer 使用 `release-ops/setup-answers/v1`。每个 build command 必须拆成 `executable` 和 `args`；每个 extension instance 必须提供 `instanceId`、`extensionId`、`configSchemaVersion` 和严格 `config`。
-
-```bash
-node scripts/release-ops.mjs plan \
-  --root <repository> \
-  --mode initialize \
-  --answers <answers.json> \
-  --out <plan.json>
+```powershell
+codex.cmd plugin marketplace upgrade release-ops --json
+codex.cmd plugin add release-ops@release-ops --json
 ```
 
-Plan 展示 config preview、processor graph、managed add/update/delete、Secret roles、仓库操作和稳定 SHA-256 digest。循环、缺失 capability、重复 build-unit owner、输出 merge 冲突、adoption SHA 漂移或 unmanaged target 冲突都会在此阶段失败。
+安装完成后，在目标项目目录中打开 Codex：
 
-## Apply
-
-```bash
-node scripts/release-ops.mjs apply \
-  --plan <plan.json> \
-  --confirm <exact-plan-digest>
+```powershell
+cd <repository>
+codex
 ```
 
-Apply 重新核验 plan digest、extension code hash 和全部当前文件 hash。远端仓库操作先按 plan 幂等执行；本地文件使用 staging、持久 journal、backup、原子替换和逆序回滚。远端成功不会被伪装成本地事务回滚。
+## 触发初始化
 
-## Audit
+在 Codex 对话中输入：
 
-```bash
-node scripts/release-ops.mjs audit --root <repository>
+```text
+使用 Release Ops 插件初始化当前项目
 ```
 
-Audit 检查 config、processor graph、workflow model 和 managed state digest，逐个核对 extension runtime、远端仓库身份和 Secret metadata。`remoteVerified:false` 或任一 digest 漂移都不是成功，必须重新 plan/apply。
+也可以使用简写：
 
-旧 `/v2` 项目参见[破坏性 reinitialize](migrations/config-v2.md)。发布操作是独立授权，setup/apply 不会自动发版。
+```text
+release-ops init
+```
+
+这两行都是发给 Codex 的请求，不是终端命令。插件会先检查当前项目；没有 Release Ops 配置时，它会自动进入初始化流程。
+
+## 回答配置问题
+
+插件会按固定顺序询问：
+
+1. 项目使用的技术栈、构建单元、构建命令和产物；
+2. 每个构建单元是否需要签名，以及使用哪种签名方式；
+3. 发布到本地目录还是 GitHub Release；
+4. GitHub 源码仓库与公开分发仓库的结构；
+5. 是否启用 Sentry 等可选服务。
+
+只回答当前项目真实需要的选项。凭据值不要写进对话或配置；Release Ops 只记录 CI 机密变量的名称和用途。
+
+## 审阅计划并确认摘要
+
+问答完成后，插件会展示完整计划：
+
+- 将生成的项目配置；
+- 构建、签名、发布和可选服务的处理器图；
+- 将新增、更新、接管或删除的文件；
+- 需要配置的机密变量名称；
+- 将验证或创建的仓库；
+- 风险与冲突；
+- 本次计划唯一的 SHA-256 摘要。
+
+检查计划内容后，把显示的完整摘要原样回复给 Codex。摘要不完全一致时，插件必须拒绝应用。确认前不会写入项目文件，也不会执行远端仓库操作。
+
+## 应用与审计
+
+确认摘要后，插件会重新核对计划、扩展代码和当前文件，再应用变更。完成后会立即审计：
+
+- 配置、处理器图和工作流摘要是否一致；
+- 只安装了当前项目选择的扩展运行时；
+- 受管文件是否被人工修改；
+- GitHub 仓库身份是否正确；
+- 机密变量名称是否齐全。
+
+审计结果必须同时满足 `success:true` 和 `remoteVerified:true`。任一摘要漂移或远端验证失败都不能视为成功。
+
+## 已初始化项目
+
+在 Codex 对话中使用以下请求：
+
+```text
+release-ops audit
+```
+
+只读检查当前配置、工作流、运行时和远端仓库。
+
+```text
+release-ops reconfigure
+```
+
+以当前有效配置为默认值，重新选择需要调整的内容；仍会先生成计划并等待摘要确认。
+
+```text
+release-ops reinitialize
+```
+
+配置损坏、格式无法识别或需要完全重做时，重新询问全部选择。它不会沿用以前的 GitHub 仓库结构或可选服务决定。
+
+## 操作边界
+
+初始化、重新配置和审计都不等于发版授权。除非用户另行明确要求发布，Release Ops 不会递增应用版本、编写发布说明、推送代码或创建 Release。

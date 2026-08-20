@@ -5,21 +5,70 @@
 
 **中文** | [English](README.en.md)
 
-Release Ops 是面向 Codex 的可复现发布插件。内核只负责扩展注册、处理器图、权限、事务、结构化工作流、审计和执行；技术栈、签名、发布目标及 Sentry 行为由内置扩展提供。
-
-项目配置位于 `.release-ops/config.json`，唯一格式为 `release-ops/config/v1`。配置只保存项目名和扩展实例，不保存路径推导状态、处理器图、生成状态或凭据值。
+Release Ops 是面向 Codex 的发布流程插件。它会询问项目技术栈、构建产物、签名方式、发布目标和可选服务，然后生成可审计、可重复执行的发布配置与工作流。
 
 ## 快速开始
+
+### 1. 安装插件
+
+在终端中执行：
 
 ```powershell
 codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
 codex.cmd plugin add release-ops@release-ops
-node scripts/release-ops.mjs inspect --root <repository>
 ```
 
-初始化流程是 `inspect -> plan --mode initialize -> apply --confirm <digest> -> audit`。合法配置默认只进入 `audit`；显式 `reconfigure` 会把当前值作为默认值，`reinitialize` 不继承 GitHub 或服务提供方决策。初始化授权不等于发版授权。
+已经添加过插件源时，先更新再重新安装：
 
-详见[初始化、重新配置与审计](docs/getting-started.md)。
+```powershell
+codex.cmd plugin marketplace upgrade release-ops --json
+codex.cmd plugin add release-ops@release-ops --json
+```
+
+### 2. 在目标项目中打开 Codex
+
+```powershell
+cd <repository>
+codex
+```
+
+### 3. 在 Codex 对话中触发初始化
+
+下面两种说法都可以。它们是发给 Codex 的请求，不是终端命令：
+
+```text
+使用 Release Ops 插件初始化当前项目
+```
+
+或：
+
+```text
+release-ops init
+```
+
+插件会检查项目，按顺序询问技术栈与构建单元、签名方式、发布方式、GitHub 仓库结构和可选服务。随后它会展示完整计划，包括将要写入和删除的文件、处理器图、机密变量名称、仓库操作及 SHA-256 摘要。
+
+在你逐字确认实际摘要之前，插件不会应用计划。应用完成后它会自动审计配置、工作流、运行时和远端仓库身份。初始化只建立发布能力，不会修改应用版本，也不会创建 Release。
+
+常用的后续请求：
+
+```text
+release-ops audit
+release-ops reconfigure
+release-ops reinitialize
+```
+
+完整说明见[安装、初始化与审计](docs/getting-started.md)。
+
+## 生成内容
+
+- `.release-ops/config.json`：项目名和已选择的扩展实例；
+- `.release-ops/processor-graph.json`：构建、签名、发布及可选服务的数据流；
+- `.release-ops/managed-files.json`：受管文件、摘要和所有权；
+- `.release-ops/runtime/`：内核及当前项目实际选择的扩展运行时；
+- 结构化生成或明确接管的 CI 工作流。
+
+配置不会保存凭据值。机密变量只以角色和名称出现，实际值仍由本地环境或 CI 的机密变量存储管理。
 
 ## 处理器数据流
 
@@ -75,7 +124,7 @@ scheduled-ingest     resolve     audit
 
 ## 文档
 
-- [初始化、重新配置、重新初始化与审计](docs/getting-started.md)
+- [安装、初始化与审计](docs/getting-started.md)
 - [本地发布](docs/workflows/local-release.md)
 - [GitHub Release](docs/workflows/github-release.md)
 - [私有源码到公开分发](docs/workflows/private-to-public.md)

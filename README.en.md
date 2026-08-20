@@ -5,21 +5,70 @@
 
 [中文](README.md) | **English**
 
-Release Ops is a reproducible release plugin for Codex. The kernel is limited to extension registration, processor graphs, permissions, transactions, structured workflows, auditing, and execution. Built-in extensions own stack, signing, publication, and Sentry behavior.
-
-Project configuration lives at `.release-ops/config.json` and uses `release-ops/config/v1`. It stores only the project name and extension instances. Derived paths, processor graphs, generated state, and credential values are never hand-maintained configuration.
+Release Ops is a release workflow plugin for Codex. It asks about the project stack, build artifacts, signing, publication target, and optional services, then creates an auditable and reproducible release configuration and workflow.
 
 ## Quick Start
+
+### 1. Install the Plugin
+
+Run these commands in a terminal:
 
 ```powershell
 codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
 codex.cmd plugin add release-ops@release-ops
-node scripts/release-ops.mjs inspect --root <repository>
 ```
 
-The setup flow is `inspect -> plan --mode initialize -> apply --confirm <digest> -> audit`. A valid configuration defaults to `audit`; explicit `reconfigure` uses current values as defaults, while `reinitialize` inherits neither GitHub nor provider decisions. Setup authorization is not release authorization.
+If the marketplace is already installed, update it and reinstall the Plugin:
 
-See [Setup, reconfiguration, and audit](docs/getting-started.md).
+```powershell
+codex.cmd plugin marketplace upgrade release-ops --json
+codex.cmd plugin add release-ops@release-ops --json
+```
+
+### 2. Open Codex in the Target Project
+
+```powershell
+cd <repository>
+codex
+```
+
+### 3. Start Initialization in the Codex Conversation
+
+Either prompt works. These are requests to Codex, not terminal commands:
+
+```text
+Use the Release Ops plugin to initialize this project
+```
+
+or:
+
+```text
+release-ops init
+```
+
+The Plugin inspects the project and asks, in order, about stacks and build units, signing, publication, GitHub repository layout, and optional services. It then presents the complete plan: managed file additions, updates and deletions, the processor graph, Secret names, repository operations, and the SHA-256 digest.
+
+The Plugin does not apply anything until you confirm the exact digest. After applying, it audits the configuration, workflows, runtime, and remote repository identity. Initialization creates release capability; it does not change the application version or create a Release.
+
+Common follow-up prompts:
+
+```text
+release-ops audit
+release-ops reconfigure
+release-ops reinitialize
+```
+
+See [Installation, initialization, and audit](docs/getting-started.en.md) for the complete workflow.
+
+## Generated State
+
+- `.release-ops/config.json`: the project name and selected extension instances;
+- `.release-ops/processor-graph.json`: the build, signing, publication, and optional service data flow;
+- `.release-ops/managed-files.json`: managed file ownership and digests;
+- `.release-ops/runtime/`: the kernel and only the extension runtimes selected for this project;
+- structurally generated or explicitly adopted CI workflows.
+
+Configuration never stores credential values. Secrets appear only as roles and names; their values remain in the local environment or CI Secret store.
 
 ## Processor Data Flow
 
@@ -75,7 +124,7 @@ This matrix is generated deterministically from `extensions/**/extension.json`:
 
 ## Documentation
 
-- [Setup, reconfiguration, reinitialization, and audit](docs/getting-started.md)
+- [Installation, initialization, and audit](docs/getting-started.en.md)
 - [Local publication](docs/workflows/local-release.md)
 - [GitHub Release](docs/workflows/github-release.md)
 - [Private-to-public distribution](docs/workflows/private-to-public.md)

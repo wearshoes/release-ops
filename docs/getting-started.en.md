@@ -1,0 +1,108 @@
+# Installation, Initialization, and Audit
+
+[中文](getting-started.md) | **English**
+
+Release Ops is used through its Codex Plugin. Regular users do not need to find or execute the Plugin's internal Node.js scripts, and they do not need to hand-write `.release-ops` configuration.
+
+## Install the Plugin
+
+For a first installation, run:
+
+```powershell
+codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
+codex.cmd plugin add release-ops@release-ops
+```
+
+If the marketplace is already installed, update it and reinstall the Plugin:
+
+```powershell
+codex.cmd plugin marketplace upgrade release-ops --json
+codex.cmd plugin add release-ops@release-ops --json
+```
+
+Then open Codex in the target project:
+
+```powershell
+cd <repository>
+codex
+```
+
+## Start Initialization
+
+Enter this request in the Codex conversation:
+
+```text
+Use the Release Ops plugin to initialize this project
+```
+
+The short form works as well:
+
+```text
+release-ops init
+```
+
+These are requests to Codex, not terminal commands. The Plugin inspects the current project first. If Release Ops configuration is missing, it automatically starts initialization.
+
+## Answer the Setup Questions
+
+The Plugin asks in a fixed order:
+
+1. project stacks, build units, build commands, and artifacts;
+2. whether each build unit needs signing and which signing method to use;
+3. local output or GitHub Release publication;
+4. the GitHub source and public distribution repository layout;
+5. whether to enable optional services such as Sentry.
+
+Choose only what the project actually needs. Never paste credential values into the conversation or configuration. Release Ops records only CI Secret names and roles.
+
+## Review the Plan and Confirm Its Digest
+
+After the questions, the Plugin presents the complete plan:
+
+- generated project configuration;
+- the processor graph for build, signing, publication, and optional services;
+- managed files to add, update, adopt, or delete;
+- required Secret names;
+- repositories to verify or create;
+- conflicts and residual risks;
+- the plan's unique SHA-256 digest.
+
+Review the plan, then reply with the complete digest exactly as displayed. The Plugin must reject any other value. It does not write project files or perform remote repository operations before confirmation.
+
+## Apply and Audit
+
+After confirmation, the Plugin rechecks the plan, extension code, and current files before applying changes. It then audits:
+
+- configuration, processor graph, and workflow digest consistency;
+- that only selected extension runtimes are installed;
+- whether managed files were edited;
+- GitHub repository identity;
+- required Secret names.
+
+A successful audit requires both `success:true` and `remoteVerified:true`. Digest drift or failed remote verification is not success.
+
+## Existing Projects
+
+Use these prompts in the Codex conversation:
+
+```text
+release-ops audit
+```
+
+Performs a read-only check of configuration, workflows, runtime, and remote repositories.
+
+```text
+release-ops reconfigure
+```
+
+Uses the current valid configuration as defaults and asks about changes. It still generates a plan and waits for exact digest confirmation.
+
+```text
+release-ops reinitialize
+```
+
+Use this when configuration is damaged, unrecognized, or must be rebuilt completely. It asks every question again and does not inherit previous GitHub repository layout or optional service choices.
+
+## Authorization Boundary
+
+Initialization, reconfiguration, and audit are not authorization to publish. Release Ops does not increment the application version, write release notes, push code, or create a Release unless the user separately and explicitly requests publication.

@@ -131,7 +131,7 @@ def validate_files() -> None:
         "scripts/release-ops.mjs", "scripts/setup-core.mjs", "scripts/extension-registry.mjs",
         "scripts/processor-graph.mjs", "scripts/kernel-api.mjs", "scripts/workflow-renderer.mjs",
         "scripts/project-installer.mjs", "scripts/execute.mjs", "scripts/validate-boundaries.mjs",
-        "docs/getting-started.md", "docs/extensions/developing.md", "docs/migrations/config-v2.md",
+        "docs/getting-started.md", "docs/getting-started.en.md", "docs/extensions/developing.md",
     ]
     for relative in required:
         if not (ROOT / relative).is_file():
