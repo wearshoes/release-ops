@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 
 import { isMainModule } from "./cli-entry.mjs";
+import { releaseConfig } from "./config-query.mjs";
 import { loadConfig } from "./config.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { dispatchWorkflowAndWait } from "./workflow-dispatch.mjs";
@@ -16,7 +17,8 @@ function validateInputs(config, { version, buildNumbers, sourceSha, correlation 
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(correlation)) {
         throw new Error("Correlation id must be a UUID v4");
     }
-    if (!config.hosting.github.enabled) throw new Error("GitHub releases are disabled");
+    const release = releaseConfig(config);
+    if (release.mode === "local") throw new Error("GitHub releases are disabled");
 }
 
 export function releaseRunTitle(version, sourceSha, correlation) {
@@ -25,14 +27,15 @@ export function releaseRunTitle(version, sourceSha, correlation) {
 
 export async function dispatchRelease({ github, config, version, buildNumbers = {}, sourceSha, correlation, ...timing }) {
     validateInputs(config, { version, buildNumbers, sourceSha, correlation });
-    const repository = config.hosting.github.source.repository;
-    const workflow = config.release.workflowFile.split("/").at(-1);
+    const release = releaseConfig(config);
+    const repository = release.source.repository;
+    const workflow = release.workflowFile.split("/").at(-1);
     const title = releaseRunTitle(version, sourceSha, correlation);
     const run = await dispatchWorkflowAndWait({
         github,
         repository,
         workflow,
-        branch: config.hosting.github.source.defaultBranch,
+        branch: release.source.defaultBranch,
         title,
         inputs: {
             version,
@@ -66,7 +69,8 @@ async function main() {
     }
     const config = await loadConfig(values.get("--root") ?? process.cwd());
     const token = process.env.github_token ?? process.env.GITHUB_TOKEN;
-    const github = createGitHubClient({ sourceRepository: config.hosting.github.source.repository, sourceToken: token });
+    const release = releaseConfig(config);
+    const github = createGitHubClient({ sourceRepository: release.source.repository, sourceToken: token });
     const result = await dispatchRelease({
         github,
         config,

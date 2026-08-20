@@ -1,0 +1,227 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "sentry",
+  "type": "provider",
+  "version": "1.1.0",
+  "status": "supported",
+  "configSchemaVersion": "release-ops/extension-config/sentry/v1",
+  "configSchema": "assets/extension-schemas/sentry.schema.json",
+  "docs": "docs/providers/sentry.md",
+  "dependencies": [
+    {
+      "capability": "release-context",
+      "cardinality": "one",
+      "optional": false
+    },
+    {
+      "capability": "debug-artifacts",
+      "cardinality": "many",
+      "optional": true
+    }
+  ],
+  "questions": [
+    {
+      "id": "project",
+      "type": "sentry-project",
+      "required": true
+    },
+    {
+      "id": "issueSync",
+      "type": "boolean",
+      "required": true
+    }
+  ],
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "plan",
+      "stage": "plan",
+      "module": "scripts/processors/sentry.mjs",
+      "entrypoint": "planSentryProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "debug",
+      "stage": "debug-artifacts",
+      "module": "scripts/processors/sentry.mjs",
+      "entrypoint": "debugArtifactsProcessor",
+      "requires": [
+        {
+          "capability": "release-context",
+          "cardinality": "one",
+          "optional": false
+        },
+        {
+          "capability": "debug-artifacts",
+          "cardinality": "many",
+          "optional": true
+        }
+      ],
+      "provides": [
+        {
+          "capability": "provider-release",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "build-upload",
+          "required": true,
+          "defaultName": "SENTRY_ORG_CI_TOKEN"
+        }
+      ],
+      "permissions": {
+        "commands": [
+          {
+            "id": "sentry-cli",
+            "executable": "sentry-cli"
+          }
+        ],
+        "networkOrigins": [
+          "config-origin:apiBase"
+        ]
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "release",
+      "stage": "publish-stage",
+      "module": "scripts/processors/sentry.mjs",
+      "entrypoint": "releaseProcessor",
+      "requires": [
+        {
+          "capability": "release-context",
+          "cardinality": "one",
+          "optional": false
+        }
+      ],
+      "provides": [
+        {
+          "capability": "provider-release",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "build-upload",
+          "required": true,
+          "defaultName": "SENTRY_ORG_CI_TOKEN"
+        }
+      ],
+      "permissions": {
+        "commands": [
+          {
+            "id": "sentry-cli",
+            "executable": "sentry-cli"
+          }
+        ],
+        "networkOrigins": [
+          "config-origin:apiBase"
+        ]
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "ingest",
+      "stage": "scheduled-ingest",
+      "module": "scripts/processors/sentry.mjs",
+      "entrypoint": "scheduledIngestProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "github-token",
+          "required": false,
+          "defaultName": "GITHUB_TOKEN"
+        },
+        {
+          "role": "incident-read",
+          "required": true,
+          "defaultName": "SENTRY_AUTH_TOKEN"
+        }
+      ],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": [
+          "config-origin:apiBase",
+          "https://api.github.com"
+        ]
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "resolve",
+      "stage": "resolve",
+      "module": "scripts/processors/sentry.mjs",
+      "entrypoint": "resolveProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "github-token",
+          "required": false,
+          "defaultName": "GITHUB_TOKEN"
+        },
+        {
+          "role": "incident-read",
+          "required": true,
+          "defaultName": "SENTRY_AUTH_TOKEN"
+        },
+        {
+          "role": "incident-write",
+          "required": true,
+          "defaultName": "SENTRY_WRITE_TOKEN"
+        }
+      ],
+      "permissions": {
+        "commands": [
+          {
+            "id": "git",
+            "executable": "git"
+          }
+        ],
+        "networkOrigins": [
+          "config-origin:apiBase",
+          "https://api.github.com"
+        ]
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "audit",
+      "stage": "audit",
+      "module": "scripts/processors/sentry.mjs",
+      "entrypoint": "auditProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/sentry.mjs",
+    "scripts/processors/sentry-lifecycle.mjs"
+  ]
+}

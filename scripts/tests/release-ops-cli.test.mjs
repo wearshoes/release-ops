@@ -1,55 +1,42 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
-import { baseConfig, fixtureRoot } from "./fixtures.mjs";
+import { answersFor, baseConfig, fixtureRoot } from "./fixtures.mjs";
 
-const execFileAsync = promisify(execFile);
-const script = fileURLToPath(new URL("../release-ops.mjs", import.meta.url));
+const CLI = resolve("scripts/release-ops.mjs");
 
-function answers(providerSelection) {
-    const config = baseConfig({ github: false });
-    return {
-        schemaVersion: "release-ops/setup-answers/v2",
-        project: config.project,
-        build: config.build,
-        versioning: config.versioning,
-        github: { enabled: false },
-        release: config.release,
-        providerSelection,
-        providers: {},
-    };
+function run(args) {
+    return spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", windowsHide: true });
 }
 
-test("inspect CLI exposes required GitHub and provider decisions", async () => {
-    const root = await fixtureRoot("release-ops-inspect-");
-    const { stdout } = await execFileAsync(process.execPath, [script, "inspect", "--root", root]);
-    const result = JSON.parse(stdout);
-    assert.equal(result.schemaVersion, "release-ops/inspect/v2");
-    assert.equal(result.decisionCheckpoint.status, "awaiting-user");
-    assert.deepEqual(result.decisionCheckpoint.decisions, ["github", "providerSelection"]);
-    assert.equal(result.decisions.providerSelection.required, true);
-    assert.equal(result.decisions.providerSelection.status, "unresolved");
-    assert.equal(result.decisions.providerSelection.source, "current-user");
-    assert.equal(result.decisions.providerSelection.inferenceAllowed, false);
-    assert.deepEqual(result.decisions.providerSelection.choices, ["none", "sentry"]);
+test("CLI inspect and reinitialize expose the v2 incompatibility route read-only", async () => {
+    const root = await fixtureRoot("release-ops-cli-v2-");
+    await mkdir(join(root, ".release-ops"));
+    await writeFile(join(root, ".release-ops", "config.json"), '{"schemaVersion":"release-ops/config/v2"}\n', "utf8");
+    const inspected = run(["inspect", "--root", root]);
+    assert.equal(inspected.status, 0, inspected.stderr);
+    assert.equal(JSON.parse(inspected.stdout).config.status, "incompatible");
+    const route = run(["reinitialize", "--root", root, "--extensions", "android,github,sentry"]);
+    assert.equal(route.status, 0, route.stderr);
+    const parsed = JSON.parse(route.stdout);
+    assert.equal(parsed.readOnly, true);
+    assert.equal(parsed.inheritance, "none");
 });
 
-test("plan refuses an omitted provider decision and hashes an explicit none selection", async () => {
-    const root = await fixtureRoot("release-ops-plan-");
-    const omitted = join(root, "omitted.json");
-    await writeFile(omitted, JSON.stringify({ ...answers([]), providerSelection: undefined }), "utf8");
-    await assert.rejects(execFileAsync(process.execPath, [script, "plan", "--root", root, "--answers", omitted]), /providerSelection is required/u);
-    const explicit = join(root, "answers.json");
-    await writeFile(explicit, JSON.stringify(answers(["none"])), "utf8");
-    const { stdout } = await execFileAsync(process.execPath, [script, "plan", "--root", root, "--answers", explicit]);
-    const plan = JSON.parse(stdout);
-    assert.equal(plan.schemaVersion, "release-ops/setup-plan/v2");
+test("CLI plan requires --mode and emits a stable v1 digest", async () => {
+    const root = await fixtureRoot("release-ops-cli-plan-");
+    const answersPath = join(root, "answers.json");
+    await writeFile(answersPath, JSON.stringify(answersFor(baseConfig())), "utf8");
+    const missingMode = run(["plan", "--root", root, "--answers", answersPath]);
+    assert.notEqual(missingMode.status, 0);
+    assert.match(missingMode.stderr, /--mode is required/u);
+    const planned = run(["plan", "--root", root, "--mode", "initialize", "--answers", answersPath]);
+    assert.equal(planned.status, 0, planned.stderr);
+    const plan = JSON.parse(planned.stdout);
+    assert.equal(plan.schemaVersion, "release-ops/setup-plan/v1");
     assert.match(plan.planDigest, /^[0-9a-f]{64}$/u);
-    assert.equal(Object.hasOwn(plan.config.providers, "sentry"), false);
-    assert.equal(plan.managedFiles.operations.some(({ path }) => path.toLowerCase().includes("sentry")), false);
+    assert.equal(plan.config.schemaVersion, "release-ops/config/v1");
 });

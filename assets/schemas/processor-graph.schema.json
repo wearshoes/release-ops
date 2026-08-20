@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/processor-graph-v1.json",
+  "title": "Release Ops processor graph",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "configDigest", "extensions", "nodes", "order", "capabilities", "buildUnitOwners", "graphDigest"],
+  "properties": {
+    "schemaVersion": { "const": "release-ops/processor-graph/v1" },
+    "configDigest": { "$ref": "#/$defs/hash" },
+    "extensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["instanceId", "extensionId", "type", "version", "codeSha256"],
+        "properties": {
+          "instanceId": { "$ref": "config.schema.json#/$defs/id" },
+          "extensionId": { "$ref": "config.schema.json#/$defs/id" },
+          "type": { "enum": ["stack", "signing", "release", "provider"] },
+          "version": { "type": "string" },
+          "codeSha256": { "$ref": "#/$defs/hash" }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id", "instanceId", "extensionId", "extensionType", "processorId", "stage", "module",
+          "entrypoint", "requires", "provides", "before", "after", "secretRoles", "permissions"
+        ],
+        "properties": {
+          "id": { "$ref": "#/$defs/nodeId" },
+          "instanceId": { "$ref": "config.schema.json#/$defs/id" },
+          "extensionId": { "$ref": "config.schema.json#/$defs/id" },
+          "extensionType": { "enum": ["stack", "signing", "release", "provider"] },
+          "processorId": { "$ref": "config.schema.json#/$defs/id" },
+          "stage": { "$ref": "processor.schema.json#/properties/stage" },
+          "module": { "$ref": "processor.schema.json#/$defs/path" },
+          "entrypoint": { "$ref": "processor.schema.json#/properties/entrypoint" },
+          "requires": { "$ref": "processor.schema.json#/properties/requires" },
+          "provides": { "$ref": "processor.schema.json#/properties/provides" },
+          "before": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nodeId" } },
+          "after": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nodeId" } },
+          "secretRoles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["role", "required"],
+              "properties": {
+                "role": { "$ref": "config.schema.json#/$defs/id" },
+                "required": { "type": "boolean" },
+                "defaultName": { "$ref": "processor.schema.json#/$defs/secret" },
+                "configuredName": { "$ref": "processor.schema.json#/$defs/secret" },
+                "sourceInstanceId": { "$ref": "config.schema.json#/$defs/id" }
+              }
+            }
+          },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["commands", "networkOrigins", "outputRoots"],
+            "properties": {
+              "commands": { "$ref": "processor.schema.json#/properties/permissions/properties/commands" },
+              "networkOrigins": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^https://[^/?#]+$" }
+              },
+              "outputRoots": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "$ref": "processor.schema.json#/$defs/path" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "order": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/nodeId" } },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["merge", "producer"],
+            "properties": {
+              "merge": { "const": "exclusive" },
+              "producer": { "$ref": "#/$defs/nodeId" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["merge", "producers"],
+            "properties": {
+              "merge": { "const": "append" },
+              "producers": { "type": "array", "items": { "$ref": "#/$defs/nodeId" } }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["merge", "producers"],
+            "properties": {
+              "merge": { "const": "keyed" },
+              "producers": { "type": "object", "additionalProperties": { "$ref": "#/$defs/nodeId" } }
+            }
+          }
+        ]
+      }
+    },
+    "buildUnitOwners": { "type": "object", "additionalProperties": { "$ref": "config.schema.json#/$defs/id" } },
+    "graphDigest": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nodeId": { "type": "string", "pattern": "^[a-z0-9-]+:[a-z0-9-]+$" }
+  }
+}

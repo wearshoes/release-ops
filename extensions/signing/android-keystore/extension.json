@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "android-keystore",
+  "type": "signing",
+  "version": "1.1.0",
+  "status": "supported",
+  "configSchemaVersion": "release-ops/extension-config/android-keystore/v1",
+  "configSchema": "assets/extension-schemas/signing.schema.json",
+  "docs": "docs/signing/android-keystore.md",
+  "dependencies": [
+    {
+      "capability": "built-artifacts",
+      "cardinality": "many",
+      "optional": false
+    }
+  ],
+  "questions": [
+    {
+      "id": "buildUnitIds",
+      "type": "build-unit-selection",
+      "required": true
+    }
+  ],
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "sign",
+      "stage": "sign",
+      "module": "scripts/processors/signing.mjs",
+      "entrypoint": "signProcessor",
+      "requires": [
+        {
+          "capability": "built-artifacts",
+          "cardinality": "many",
+          "optional": false
+        }
+      ],
+      "provides": [
+        {
+          "capability": "signed-artifacts",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "keystore",
+          "required": true,
+          "defaultName": "RELEASE_KEYSTORE_BASE64"
+        },
+        {
+          "role": "store-password",
+          "required": true,
+          "defaultName": "RELEASE_STORE_PASSWORD"
+        },
+        {
+          "role": "key-alias",
+          "required": true,
+          "defaultName": "RELEASE_KEY_ALIAS"
+        },
+        {
+          "role": "key-password",
+          "required": true,
+          "defaultName": "RELEASE_KEY_PASSWORD"
+        }
+      ],
+      "permissions": {
+        "commands": [
+          {
+            "id": "sign",
+            "executable": "config:command"
+          }
+        ],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/signing.mjs"
+  ]
+}

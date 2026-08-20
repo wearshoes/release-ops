@@ -1,6 +1,6 @@
 {
   "name": "release-ops",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "Configure, audit, and run reproducible project releases with optional quality providers.",
   "author": {
     "name": "wearshoes",

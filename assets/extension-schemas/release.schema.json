@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/release-config-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mode", "workflowFile", "tagTemplate", "titleTemplate", "localOutputDirectory", "manifest", "dispatch", "secretNames"],
+  "properties": {
+    "mode": { "enum": ["local", "same-repository", "dual-repository"] },
+    "workflowFile": { "$ref": "#/$defs/path" },
+    "tagTemplate": { "type": "string", "minLength": 1 },
+    "titleTemplate": { "type": "string", "minLength": 1 },
+    "localOutputDirectory": { "$ref": "#/$defs/path" },
+    "source": { "$ref": "#/$defs/repository" },
+    "distribution": { "oneOf": [{ "$ref": "#/$defs/repository" }, { "type": "null" }] },
+    "publicReadmeSource": { "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }] },
+    "publicReadmeTarget": { "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }] },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "assetName", "latestPath", "compatibility", "latestBuildNumberId", "minimumSupportedBuildNumber"],
+      "properties": {
+        "schemaVersion": { "const": "release-ops/release-manifest/v1" },
+        "assetName": { "type": "string", "minLength": 1 },
+        "latestPath": { "$ref": "#/$defs/path" },
+        "compatibility": { "enum": ["release-ops", "android-version-code-v1"] },
+        "latestBuildNumberId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "minimumSupportedBuildNumber": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] }
+      }
+    },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["versionInput", "sourceShaInput", "correlationInput", "buildNumberInputs"],
+      "properties": {
+        "versionInput": { "$ref": "#/$defs/input" },
+        "sourceShaInput": { "$ref": "#/$defs/input" },
+        "correlationInput": { "$ref": "#/$defs/input" },
+        "buildNumberInputs": { "type": "object", "propertyNames": { "$ref": "#/$defs/id" }, "additionalProperties": { "$ref": "#/$defs/input" } }
+      }
+    },
+    "secretNames": { "type": "object", "propertyNames": { "$ref": "#/$defs/id" }, "additionalProperties": { "$ref": "#/$defs/secret" } }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "input": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+    "secret": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" },
+    "path": { "type": "string", "pattern": "^(?![A-Za-z]:|/|.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$" },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "visibility", "defaultBranch"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "visibility": { "enum": ["private", "public"] },
+        "defaultBranch": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+$" }
+      }
+    }
+  }
+}

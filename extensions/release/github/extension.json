@@ -1,0 +1,163 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "github",
+  "type": "release",
+  "version": "1.1.0",
+  "status": "supported",
+  "configSchemaVersion": "release-ops/extension-config/github/v1",
+  "configSchema": "assets/extension-schemas/release.schema.json",
+  "docs": "docs/workflows/github-release.md",
+  "dependencies": [
+    {
+      "capability": "built-artifacts",
+      "cardinality": "many",
+      "optional": false
+    }
+  ],
+  "questions": [
+    {
+      "id": "source",
+      "type": "github-repository",
+      "required": true
+    },
+    {
+      "id": "distribution",
+      "type": "github-distribution",
+      "required": false
+    }
+  ],
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "plan",
+      "stage": "plan",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "planReleaseProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "preflight",
+      "stage": "preflight",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "preflightProcessor",
+      "requires": [],
+      "provides": [
+        {
+          "capability": "release-context",
+          "merge": "exclusive"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "source-release",
+          "required": true,
+          "defaultName": "GITHUB_TOKEN"
+        }
+      ],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": [
+          "https://api.github.com"
+        ]
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "collect",
+      "stage": "collect",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "collectProcessor",
+      "requires": [
+        {
+          "capability": "built-artifacts",
+          "cardinality": "many",
+          "optional": false
+        },
+        {
+          "capability": "signed-artifacts",
+          "cardinality": "many",
+          "optional": true
+        }
+      ],
+      "provides": [
+        {
+          "capability": "release-artifacts",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "publish",
+      "stage": "publish-finalize",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "publishProcessor",
+      "requires": [
+        {
+          "capability": "release-artifacts",
+          "cardinality": "many",
+          "optional": false
+        }
+      ],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "source-release",
+          "required": true,
+          "defaultName": "GITHUB_TOKEN"
+        },
+        {
+          "role": "distribution-release",
+          "required": false,
+          "defaultName": "RELEASE_REPO_TOKEN"
+        }
+      ],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": [
+          "https://api.github.com",
+          "https://uploads.github.com"
+        ]
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "audit",
+      "stage": "audit",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "auditProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/release.mjs"
+  ]
+}

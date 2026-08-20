@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
+import { incidentProviderConfig, releaseConfig } from "./config-query.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { createSentryClient } from "./sentry-client.mjs";
 import { parseIncidentBody, resolveSentryIncident } from "./sentry-incidents.mjs";
@@ -42,7 +43,7 @@ export function planResolutions(event, isAncestor) {
 }
 
 export async function applyResolutions({ config, bindings, github, sentryRead, sentryWrite }) {
-    const repository = config.hosting.github.source.repository;
+    const repository = releaseConfig(config).source.repository;
     const results = [];
     for (const binding of bindings) {
         try {
@@ -97,13 +98,15 @@ async function main() {
             return false;
         }
     });
-    const github = createGitHubClient({ sourceRepository: config.hosting.github.source.repository, sourceToken: process.env.GITHUB_TOKEN });
+    const release = releaseConfig(config);
+    const provider = incidentProviderConfig(config);
+    const github = createGitHubClient({ sourceRepository: release.source.repository, sourceToken: process.env.GITHUB_TOKEN });
     const result = await applyResolutions({
         config,
         bindings,
         github,
-        sentryRead: createSentryClient({ token: process.env.SENTRY_AUTH_TOKEN, apiBase: config.providers.sentry.apiBase }),
-        sentryWrite: createSentryClient({ token: process.env.SENTRY_WRITE_TOKEN, apiBase: config.providers.sentry.apiBase }),
+        sentryRead: createSentryClient({ token: process.env.SENTRY_AUTH_TOKEN, apiBase: provider.apiBase }),
+        sentryWrite: createSentryClient({ token: process.env.SENTRY_WRITE_TOKEN, apiBase: provider.apiBase }),
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     if (!result.success) process.exitCode = 1;

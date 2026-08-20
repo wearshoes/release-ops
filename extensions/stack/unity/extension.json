@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "unity",
+  "type": "stack",
+  "version": "1.1.0",
+  "status": "credential-gated",
+  "configSchemaVersion": "release-ops/extension-config/unity/v1",
+  "configSchema": "assets/extension-schemas/stack.schema.json",
+  "docs": "docs/stacks/unity.md",
+  "dependencies": [],
+  "detection": {
+    "all": [
+      "ProjectSettings/ProjectVersion.txt"
+    ],
+    "any": [],
+    "content": []
+  },
+  "questions": [
+    {
+      "id": "buildUnits",
+      "type": "build-units",
+      "required": true
+    },
+    {
+      "id": "versioning",
+      "type": "versioning",
+      "required": true
+    }
+  ],
+  "targets": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" },
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "build",
+      "stage": "build",
+      "module": "scripts/processors/stack.mjs",
+      "entrypoint": "buildProcessor",
+      "requires": [],
+      "provides": [
+        {
+          "capability": "build-units",
+          "merge": "append"
+        },
+        {
+          "capability": "version-sources",
+          "merge": "append"
+        },
+        {
+          "capability": "built-artifacts",
+          "merge": "append"
+        },
+        {
+          "capability": "debug-artifacts",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "unity-license",
+          "required": true,
+          "defaultName": "UNITY_LICENSE"
+        },
+        {
+          "role": "unity-email",
+          "required": true,
+          "defaultName": "UNITY_EMAIL"
+        },
+        {
+          "role": "unity-password",
+          "required": true,
+          "defaultName": "UNITY_PASSWORD"
+        }
+      ],
+      "permissions": {
+        "commands": [
+          {
+            "id": "build",
+            "executable": "config:command"
+          }
+        ],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/stack.mjs"
+  ]
+}

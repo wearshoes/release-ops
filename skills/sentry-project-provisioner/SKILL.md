@@ -15,7 +15,7 @@ Read [the Sentry provider SOP](../../docs/providers/sentry.md). Proceed only whe
 
 ## Workflow
 
-1. Determine the Sentry platform from the selected adapter and verify the configured HTTPS `apiBase`.
+1. Find the provider instance from `config/v1` plus processor graph, then determine the platform from selected stack capabilities and verify configured HTTPS `apiBase`.
 2. Identify an existing organization and team; never create either implicitly.
 3. Run `node ../../scripts/sentry-project.mjs --help`, inspect, and dry-run before creation.
 4. If the token is absent, support manual handoff or browser-assisted creation in the user's authenticated session. Confirm before creating or transmitting a persistent credential, then write it only to the intended encrypted Secret.

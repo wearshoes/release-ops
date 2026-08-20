@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
+import { providerConfigs, releaseConfig, stackConfigs } from "./config-query.mjs";
 import { resolveRepositoryPath } from "./path-safety.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -25,12 +26,14 @@ export async function planBuildHook(config, {
     unitId = null,
     mode = "upload",
 }) {
-    const sentry = config.providers.sentry;
-    if (!sentry?.enabled) return { schemaVersion: "release-ops-sentry-build-hook/v2", enabled: false, commands: [] };
+    const sentry = providerConfigs(config).find((candidate) => Array.isArray(candidate.debugArtifacts));
+    if (!sentry) return { schemaVersion: "release-ops/sentry-build-hook/v1", enabled: false, commands: [] };
+    const releaseSettings = releaseConfig(config);
+    const application = Object.assign({}, ...stackConfigs(config).map((stack) => stack.application ?? {}));
     if (!["upload", "release"].includes(mode)) throw new Error("Sentry build hook mode must be upload or release");
     if (!/^[0-9a-f]{40}$/u.test(sourceSha)) throw new Error("Sentry build hook requires a full lowercase source SHA");
     const values = {
-        ...(config.project.adapterOptions ?? {}),
+        ...application,
         version,
         versionCode: Object.values(buildNumbers)[0] ?? "",
         ...buildNumbers,
@@ -43,15 +46,16 @@ export async function planBuildHook(config, {
     const commands = [];
     if (mode === "release") {
         commands.push({ executable: "sentry-cli", args: ["releases", "new", release, ...shared] });
-        if (config.hosting.github.enabled) {
+        if (releaseSettings.mode !== "local") {
             commands.push({
                 executable: "sentry-cli",
-                args: ["releases", "set-commits", release, "--commit", `${config.hosting.github.source.repository}@${sourceSha}`, ...shared],
+                args: ["releases", "set-commits", release, "--commit", `${releaseSettings.source.repository}@${sourceSha}`, ...shared],
             });
         }
         commands.push({ executable: "sentry-cli", args: ["releases", "finalize", release, ...shared] });
     }
-    for (const artifact of (sentry.debugArtifacts ?? []).filter((entry) => mode === "upload" && (!entry.unit || entry.unit === unitId))) {
+    for (const artifact of (sentry.debugArtifacts ?? []).filter((entry) => mode === "upload"
+        && (!entry.buildUnitId || entry.buildUnitId === unitId))) {
         const relative = applyTemplate(artifact.path, values);
         const path = await resolveRepositoryPath(root, relative, { name: `Sentry debug artifact ${relative}`, mustExist: true });
         if (artifact.type === "source-map") {
@@ -67,7 +71,7 @@ export async function planBuildHook(config, {
             });
         }
     }
-    return { schemaVersion: "release-ops-sentry-build-hook/v2", enabled: true, mode, unitId, release, dist, apiBase: sentry.apiBase, commands };
+    return { schemaVersion: "release-ops/sentry-build-hook/v1", enabled: true, mode, unitId, release, dist, apiBase: sentry.apiBase, commands };
 }
 
 export async function runBuildHook(plan, { env = process.env, exec = execFileAsync } = {}) {

@@ -14,4 +14,4 @@ canonical version 与 Android versionCode、iOS CFBundleVersion 分开。JS bund
 
 ## 验收与限制
 
-运行 JS 测试/类型检查和平台 release build，验证 Hermes/source map 对应关系。其他 React Native 平台需要新增已测试 adapter target，不能借 generic 名义宣称支持。
+运行 JS 测试/类型检查和平台 release build，验证 Hermes/source map 对应关系。其他 React Native 平台需要新增已测试 stack target，不能借 generic 名义宣称支持。

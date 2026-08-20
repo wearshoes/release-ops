@@ -6,6 +6,7 @@ import { basename, join, resolve } from "node:path";
 
 import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig, RELEASE_SCHEMA } from "./config.mjs";
+import { allBuildUnits, releaseConfig, stackConfigs } from "./config-query.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { resolveRepositoryPath } from "./path-safety.mjs";
 
@@ -59,10 +60,19 @@ async function readVersionSource(root, source) {
 }
 
 export async function readCanonicalVersion(config, root) {
-    const version = String(await readVersionSource(root, config.versioning.canonical)).trim();
+    const stacks = stackConfigs(config);
+    if (!stacks.length) throw new Error("No stack extension provides version sources");
+    const versions = [];
     const buildNumbers = {};
-    for (const entry of config.versioning.buildNumbers ?? []) buildNumbers[entry.id] = await readVersionSource(root, entry.source);
-    return { version, buildNumbers };
+    for (const stack of stacks) {
+        versions.push(String(await readVersionSource(root, stack.versioning.canonical)).trim());
+        for (const entry of stack.versioning.buildNumbers ?? []) {
+            if (Object.hasOwn(buildNumbers, entry.id)) throw new Error(`Duplicate build number id: ${entry.id}`);
+            buildNumbers[entry.id] = await readVersionSource(root, entry.source);
+        }
+    }
+    if (new Set(versions).size !== 1) throw new Error("Stack canonical versions do not match");
+    return { version: versions[0], buildNumbers };
 }
 
 async function readUtf8(path) {
@@ -81,7 +91,7 @@ function sameBuildNumbers(actual, expected) {
 
 async function directArtifacts(config, root, values) {
     const artifacts = [];
-    for (const unit of config.build.units) {
+    for (const unit of allBuildUnits(config)) {
         for (const declared of unit.artifacts) {
             const path = await resolveRepositoryPath(root, applyTemplate(declared.path, values), {
                 name: `release artifact ${unit.id}/${declared.id}`,
@@ -106,7 +116,7 @@ async function directArtifacts(config, root, values) {
 async function aggregatedArtifacts(config, root, artifactRoot, canonical) {
     const base = await resolveRepositoryPath(root, artifactRoot, { name: "aggregated artifact root", mustExist: true });
     const artifacts = [];
-    for (const unit of config.build.units) {
+    for (const unit of allBuildUnits(config)) {
         const unitRoot = join(base, `release-ops-${unit.id}`);
         const manifestPath = join(unitRoot, "manifest.json");
         const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
@@ -141,13 +151,20 @@ async function prepare(config, root, { version, buildNumbers, sourceSha, publish
     if (canonical.version !== version) throw new Error("Canonical version does not match the release version");
     if (!sameBuildNumbers(canonical.buildNumbers, buildNumbers)) throw new Error("Canonical build numbers do not match the release inputs");
     const values = { version, ...buildNumbers };
-    const notesPath = await resolveRepositoryPath(root, applyTemplate(config.versioning.changelogPattern, values), {
+    const versioning = stackConfigs(config)[0]?.versioning;
+    if (!versioning) throw new Error("No stack extension provides release versioning");
+    if (stackConfigs(config).some((stack) => stack.versioning.changelogPattern !== versioning.changelogPattern
+        || stack.versioning.requiresChinese !== versioning.requiresChinese)) {
+        throw new Error("Stack changelog contracts do not match");
+    }
+    const release = releaseConfig(config);
+    const notesPath = await resolveRepositoryPath(root, applyTemplate(versioning.changelogPattern, values), {
         name: "release changelog",
         mustExist: true,
     });
     const notes = await readUtf8(notesPath);
     if (!notes.trim()) throw new Error("Release changelog is empty");
-    if (config.versioning.requiresChinese && !/[\u3400-\u9fff]/u.test(notes)) throw new Error("Release changelog must contain Chinese");
+    if (versioning.requiresChinese && !/[\u3400-\u9fff]/u.test(notes)) throw new Error("Release changelog must contain Chinese");
     if (/\uFFFD|\?{2,}/u.test(notes)) throw new Error("Release changelog contains corrupted text");
     const artifacts = artifactRoot
         ? await aggregatedArtifacts(config, root, artifactRoot, canonical)
@@ -161,8 +178,8 @@ async function prepare(config, root, { version, buildNumbers, sourceSha, publish
         notesPath,
         notes,
         artifacts,
-        tag: applyTemplate(config.release.tagTemplate, values),
-        title: applyTemplate(config.release.titleTemplate, values),
+        tag: applyTemplate(release.tagTemplate, values),
+        title: applyTemplate(release.titleTemplate, values),
         publishedAt,
     };
 }
@@ -190,14 +207,15 @@ export function createPublicManifest(config, prepared, repository) {
 }
 
 function createLatest(config, prepared, manifest) {
-    if (config.release.latestCompatibility === "android-version-code-v1") {
+    const release = releaseConfig(config);
+    if (release.manifest.compatibility === "android-version-code-v1") {
         const primary = manifest.artifacts[0];
-        const code = prepared.buildNumbers[config.release.latestBuildNumberId];
+        const code = prepared.buildNumbers[release.manifest.latestBuildNumberId];
         if (!Number.isSafeInteger(code) || !primary) throw new Error("Android latest manifest requires an integer build number and primary artifact");
         return {
             versionCode: code,
             versionName: prepared.version,
-            minimumSupportedVersionCode: config.release.minimumSupportedVersionCode ?? 1,
+            minimumSupportedVersionCode: release.manifest.minimumSupportedBuildNumber,
             apkUrl: primary.downloadUrl,
             releaseUrl: manifest.releaseUrl,
             sha256: primary.sha256,
@@ -280,7 +298,7 @@ function jsonAsset(name, value) {
 }
 
 async function publishLocal(config, root, prepared) {
-    const relative = join(config.release.localOutputDirectory, prepared.tag).replaceAll("\\", "/");
+    const relative = join(releaseConfig(config).localOutputDirectory, prepared.tag).replaceAll("\\", "/");
     const outputRoot = await resolveRepositoryPath(root, relative, { name: "local release output" });
     await mkdir(outputRoot, { recursive: true });
     const manifest = {
@@ -311,15 +329,20 @@ export async function publishRelease({
         throw new Error("Release correlation must be a UUID v4");
     }
     const prepared = await prepare(config, root, { version, buildNumbers, sourceSha, publishedAt, artifactRoot });
-    if (!config.hosting.github.enabled) return publishLocal(config, root, prepared);
+    const release = releaseConfig(config);
+    if (release.mode === "local") return publishLocal(config, root, prepared);
     if (!github) throw new Error("A GitHub client is required for GitHub publication");
-    const source = config.hosting.github.source;
-    const distribution = config.hosting.github.releaseMode === "dual-repository"
-        ? config.hosting.github.distribution
+    const source = release.source;
+    const distribution = release.mode === "dual-repository"
+        ? release.distribution
         : source;
     const publicManifest = createPublicManifest(config, prepared, distribution.repository);
     const latest = createLatest(config, prepared, publicManifest);
-    const sharedAssets = [...prepared.artifacts, jsonAsset("release-manifest.json", publicManifest), jsonAsset("latest.json", latest)];
+    const sharedAssets = [
+        ...prepared.artifacts,
+        jsonAsset(release.manifest.assetName, publicManifest),
+        jsonAsset(release.manifest.latestPath.split("/").at(-1), latest),
+    ];
     const sourceRelease = await ensureDraft(github, source.repository, prepared, sourceSha);
     const publicRelease = distribution.repository === source.repository
         ? sourceRelease
@@ -332,17 +355,17 @@ export async function publishRelease({
         github,
         distribution.repository,
         distribution.defaultBranch,
-        config.release.latestManifest,
+        release.manifest.latestPath,
         `${JSON.stringify(latest, null, 2)}\n`,
         `release: ${prepared.tag}`,
     );
-    if (config.release.publicReadmeSource && config.release.publicReadmeTarget) {
-        const readmePath = await resolveRepositoryPath(root, config.release.publicReadmeSource, { name: "public README", mustExist: true });
+    if (release.publicReadmeSource && release.publicReadmeTarget) {
+        const readmePath = await resolveRepositoryPath(root, release.publicReadmeSource, { name: "public README", mustExist: true });
         await putRepositoryFile(
             github,
             distribution.repository,
             distribution.defaultBranch,
-            config.release.publicReadmeTarget,
+            release.publicReadmeTarget,
             await readUtf8(readmePath),
             `docs: synchronize release README for ${prepared.tag}`,
         );
@@ -353,7 +376,7 @@ export async function publishRelease({
         : await publishDraft(github, distribution.repository, publicRelease);
     return {
         schemaVersion: "release-ops-publish-result/v2",
-        mode: config.hosting.github.releaseMode,
+        mode: release.mode,
         version: prepared.version,
         tag: prepared.tag,
         manifest: publicManifest,
@@ -384,12 +407,13 @@ async function main() {
     const root = resolve(args.get("--root") ?? process.cwd());
     const config = await loadConfig(root);
     let github = null;
-    if (config.hosting.github.enabled) {
+    const release = releaseConfig(config);
+    if (release.mode !== "local") {
         const sourceToken = process.env.GITHUB_TOKEN ?? process.env.github_token;
-        const publicToken = config.hosting.github.releaseMode === "dual-repository" ? process.env.RELEASE_REPO_TOKEN : sourceToken;
+        const publicToken = release.mode === "dual-repository" ? process.env.RELEASE_REPO_TOKEN : sourceToken;
         github = createGitHubClient({
-            sourceRepository: config.hosting.github.source.repository,
-            publicRepository: config.hosting.github.distribution?.repository,
+            sourceRepository: release.source.repository,
+            publicRepository: release.distribution?.repository,
             sourceToken,
             publicToken,
         });

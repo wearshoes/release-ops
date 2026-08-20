@@ -1,30 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CONFIG_SCHEMA, RELEASE_SCHEMA } from "../config.mjs";
 import { dispatchRelease, releaseRunTitle } from "../dispatch-release.mjs";
-import { PROVIDERS } from "../provider-registry.mjs";
+import { baseConfig } from "./fixtures.mjs";
 
 const sha = "a".repeat(40);
 const correlation = "11111111-2222-4333-8444-555555555555";
 
 function config() {
-    return {
-        schemaVersion: CONFIG_SCHEMA,
-        project: { name: "Example", adapter: "generic" },
-        build: { units: [] },
-        versioning: {},
-        hosting: { github: { enabled: true, source: { repository: "owner/example", defaultBranch: "trunk" } } },
-        release: { workflowFile: ".github/workflows/publish-release.yml", manifestSchema: RELEASE_SCHEMA },
-        providers: { sentry: { schemaVersion: PROVIDERS.sentry.configSchemaVersion, enabled: false } },
-    };
+    return baseConfig({ mode: "dual-repository" });
 }
 
 function run(id, title) {
     return {
         id,
         event: "workflow_dispatch",
-        head_branch: "trunk",
+        head_branch: "main",
         html_url: `https://github.com/owner/example/actions/runs/${id}`,
         display_title: title,
         status: "completed",

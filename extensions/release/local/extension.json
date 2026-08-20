@@ -1,0 +1,139 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "local",
+  "type": "release",
+  "version": "1.1.0",
+  "status": "supported",
+  "configSchemaVersion": "release-ops/extension-config/local/v1",
+  "configSchema": "assets/extension-schemas/release.schema.json",
+  "docs": "docs/workflows/local-release.md",
+  "dependencies": [
+    {
+      "capability": "built-artifacts",
+      "cardinality": "many",
+      "optional": false
+    }
+  ],
+  "questions": [
+    {
+      "id": "output",
+      "type": "path",
+      "required": true
+    }
+  ],
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "plan",
+      "stage": "plan",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "planReleaseProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "preflight",
+      "stage": "preflight",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "preflightProcessor",
+      "requires": [],
+      "provides": [
+        {
+          "capability": "release-context",
+          "merge": "exclusive"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "collect",
+      "stage": "collect",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "collectProcessor",
+      "requires": [
+        {
+          "capability": "built-artifacts",
+          "cardinality": "many",
+          "optional": false
+        },
+        {
+          "capability": "signed-artifacts",
+          "cardinality": "many",
+          "optional": true
+        }
+      ],
+      "provides": [
+        {
+          "capability": "release-artifacts",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "publish",
+      "stage": "publish-finalize",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "publishProcessor",
+      "requires": [
+        {
+          "capability": "release-artifacts",
+          "cardinality": "many",
+          "optional": false
+        }
+      ],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": [],
+        "outputRoots": [
+          "config:localOutputDirectory"
+        ]
+      }
+    },
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "audit",
+      "stage": "audit",
+      "module": "scripts/processors/release.mjs",
+      "entrypoint": "auditProcessor",
+      "requires": [],
+      "provides": [],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/release.mjs"
+  ]
+}

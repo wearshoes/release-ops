@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "apple-codesign",
+  "type": "signing",
+  "version": "1.1.0",
+  "status": "supported",
+  "configSchemaVersion": "release-ops/extension-config/apple-codesign/v1",
+  "configSchema": "assets/extension-schemas/signing.schema.json",
+  "docs": "docs/signing/apple-codesign.md",
+  "dependencies": [
+    {
+      "capability": "built-artifacts",
+      "cardinality": "many",
+      "optional": false
+    }
+  ],
+  "questions": [
+    {
+      "id": "buildUnitIds",
+      "type": "build-unit-selection",
+      "required": true
+    }
+  ],
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "sign",
+      "stage": "sign",
+      "module": "scripts/processors/signing.mjs",
+      "entrypoint": "signProcessor",
+      "requires": [
+        {
+          "capability": "built-artifacts",
+          "cardinality": "many",
+          "optional": false
+        }
+      ],
+      "provides": [
+        {
+          "capability": "signed-artifacts",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "certificate",
+          "required": true,
+          "defaultName": "APPLE_SIGNING_CERTIFICATE"
+        },
+        {
+          "role": "certificate-password",
+          "required": true,
+          "defaultName": "APPLE_SIGNING_CERTIFICATE_PASSWORD"
+        },
+        {
+          "role": "provisioning-profile",
+          "required": false,
+          "defaultName": "APPLE_PROVISIONING_PROFILE"
+        }
+      ],
+      "permissions": {
+        "commands": [
+          {
+            "id": "sign",
+            "executable": "config:command"
+          }
+        ],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/signing.mjs"
+  ]
+}

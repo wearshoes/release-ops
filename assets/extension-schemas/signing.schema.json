@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/signing-config-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["buildUnitIds", "secretNames"],
+  "properties": {
+    "buildUnitIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "secretNames": { "type": "object", "propertyNames": { "$ref": "#/$defs/id" }, "additionalProperties": { "$ref": "#/$defs/secret" } },
+    "storeFile": { "$ref": "#/$defs/path" },
+    "propertiesFile": { "$ref": "#/$defs/path" },
+    "command": { "$ref": "#/$defs/command" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "secret": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" },
+    "path": { "type": "string", "pattern": "^(?![A-Za-z]:|/|.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$" },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "args"],
+      "properties": { "executable": { "type": "string", "minLength": 1 }, "args": { "type": "array", "items": { "type": "string" } } }
+    }
+  }
+}

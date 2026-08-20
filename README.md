@@ -3,82 +3,97 @@
 [![Verify Release Ops](https://github.com/wearshoes/release-ops/actions/workflows/ci.yml/badge.svg)](https://github.com/wearshoes/release-ops/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Release Ops 是面向 Codex 的可复用发布 Plugin。它负责项目探测、构建、签名、版本核对、GitHub 托管、private-to-public 分发和 GitHub Release；Sentry 等质量系统以可选 provider 接入，不拥有版本或发布目标。
+Release Ops 是面向 Codex 的可复现发布 Plugin。Kernel 只负责 extension 注册、processor graph、权限、事务、结构化 workflow、审计和执行；技术栈、签名、发布目标及 Sentry 行为由内置 extension 提供。
 
-配置写入项目的 `.release-ops/config.json`，凭据只存在于本地环境或目标仓库的 Actions Secrets。旧的 `release-ops/config/v1` 不兼容，必须按[迁移 SOP](docs/migrations/config-v1.md)重新初始化。
+项目配置位于 `.release-ops/config.json`，唯一格式为 `release-ops/config/v1`。配置只保存项目名和 extension 实例，不保存路径推导状态、processor graph、生成状态或凭据值。旧 `release-ops/config/v2` 不提供转换器，必须显式 `reinitialize`。
 
-## 五分钟开始
+## 快速开始
 
-```bash
-codex plugin marketplace add wearshoes/release-ops --ref main
-codex plugin add release-ops@release-ops
+```powershell
+codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
+codex.cmd plugin add release-ops@release-ops
+node scripts/release-ops.mjs inspect --root <repository>
 ```
 
-Windows PowerShell 拦截 `codex.ps1` 时使用 `codex.cmd`。安装或升级后重启 Codex，并在目标仓库根目录新建任务：
+初始化流程是 `inspect -> plan --mode initialize -> apply --confirm <digest> -> audit`。合法 `/v1` 默认只进入 audit；显式 `reconfigure` 会把当前值作为默认值，`reinitialize` 不继承 GitHub 或 provider 决策。初始化授权不等于发版授权。
+
+详见[初始化与迁移](docs/getting-started.md)和[`/v2` reinitialize](docs/migrations/config-v2.md)。
+
+## Processor 数据流
+
+每个 processor 节点使用 `<instanceId>:<processorId>` 标识。Kernel 依固定 stage、显式 `before/after` 和完整节点 ID 排序；跨实例依赖只由 capability 建边。
 
 ```text
-使用 $release-ops-setup 初始化或审计当前项目。先 inspect，只询问无法从仓库或 GitHub 验证的决策；必须明确询问是否使用 GitHub，以及选择 None 还是已安装的 provider。生成 plan 和 SHA-256 摘要后等待我确认，不要发版。
+inspect/configure/plan
+        |
+preflight -> prepare -> build -> sign -> debug-artifacts -> collect -> publish-stage -> publish-finalize
+
+scheduled-ingest     resolve     audit
+      (独立入口，不进入 release 主链)
 ```
 
-Agent 将执行 `inspect -> plan -> apply -> audit`。`apply` 必须携带与 plan 完全相同的 SHA-256；初始化授权不等于发版授权。
+Capability 支持 `one/many` 消费和 `exclusive/append/keyed` 合并。缺失、歧义、重复 key、重复 build-unit owner 或循环会在 plan 阶段失败。
 
-完整步骤见[新旧项目初始化](docs/getting-started.md)。
+## 内置 Extensions
 
-## 文档导航
+以下矩阵由 `extensions/**/extension.json` 确定性生成：
 
-| 目标 | SOP |
-| --- | --- |
-| 本地构建、签名和校验和 | [本地发布](docs/workflows/local-release.md) |
-| public 源码仓库发版 | [GitHub Release](docs/workflows/github-release.md) |
-| private 源码向 public 仓库分发 | [Private-to-public](docs/workflows/private-to-public.md) |
-| 审计、升级和冲突处理 | [审计与升级](docs/workflows/audit-and-upgrade.md) |
-| 从旧配置迁移 | [config/v1 迁移](docs/migrations/config-v1.md) |
-| 选择或开发质量平台 | [Provider 索引](docs/providers/README.md) |
-| 按技术栈配置构建 | [技术栈索引](docs/stacks/README.md) |
+<!-- EXTENSION_MATRIX_START -->
+| Type | Extension | Status | Targets |
+| --- | --- | --- | --- |
+| provider | [sentry](docs/providers/sentry.md) | supported | - |
+| release | [github](docs/workflows/github-release.md) | supported | - |
+| release | [local](docs/workflows/local-release.md) | supported | - |
+| signing | [android-keystore](docs/signing/android-keystore.md) | supported | - |
+| signing | [apple-codesign](docs/signing/apple-codesign.md) | supported | - |
+| signing | [generic-command](docs/signing/generic-command.md) | supported | - |
+| stack | [android](docs/stacks/android.md) | supported | android: ubuntu-latest |
+| stack | [apple](docs/stacks/apple.md) | supported | macos: macos-latest<br>ios: macos-latest |
+| stack | [dotnet](docs/stacks/dotnet.md) | supported | linux: ubuntu-latest<br>windows: windows-latest<br>macos: macos-latest |
+| stack | [flutter](docs/stacks/flutter.md) | supported | android: ubuntu-latest<br>windows: windows-latest<br>ios: macos-latest |
+| stack | [generic](docs/stacks/generic.md) | supported | - |
+| stack | [godot](docs/stacks/godot.md) | supported | linux: ubuntu-latest<br>web: ubuntu-latest<br>android: ubuntu-latest<br>windows: windows-latest<br>macos: macos-latest<br>ios: macos-latest |
+| stack | [javascript](docs/stacks/javascript.md) | supported | web: ubuntu-latest<br>windows: windows-latest<br>macos: macos-latest |
+| stack | [native](docs/stacks/native.md) | supported | linux: ubuntu-latest<br>windows: windows-latest<br>macos: macos-latest |
+| stack | [react-native](docs/stacks/react-native.md) | supported | android: ubuntu-latest<br>ios: macos-latest |
+| stack | [unity](docs/stacks/unity.md) | credential-gated | linux: ubuntu-latest<br>windows: windows-latest<br>macos: macos-latest |
+| stack | [unreal](docs/stacks/unreal.md) | diagnostic only | - |
+<!-- EXTENSION_MATRIX_END -->
 
-## 技术栈
-
-| Adapter | 状态 | 文档 |
-| --- | --- | --- |
-| Android Gradle | 支持 | [Android](docs/stacks/android.md) |
-| Xcode | 支持 | [Apple](docs/stacks/apple.md) |
-| JavaScript/TypeScript | 支持 | [JavaScript](docs/stacks/javascript.md) |
-| .NET | 支持 | [.NET](docs/stacks/dotnet.md) |
-| C/C++/Rust native | 支持 | [Native](docs/stacks/native.md) |
-| Flutter | 支持 | [Flutter](docs/stacks/flutter.md) |
-| React Native | 支持 | [React Native](docs/stacks/react-native.md) |
-| Godot | 支持 hosted runner | [Godot](docs/stacks/godot.md) |
-| Unity | GameCI，凭据门禁 | [Unity](docs/stacks/unity.md) |
-| Generic | 显式配置 | [Generic](docs/stacks/generic.md) |
-| Unreal | 仅检测，不支持 | [Unreal](docs/stacks/unreal.md) |
-
-## Provider
-
-当前仅安装 [Sentry](docs/providers/sentry.md)。`performance` 与 `vulnerability` 只是开发 contract fixture，不会作为可选项展示。Provider 必须由用户整体选择；检测到 SDK、旧 workflow 或环境变量都不会自动启用。
+`performance` 与 `vulnerability` 仅是未注册 contract fixture，不会出现在 setup 选项、runtime、workflow、Secret 或网络权限中。
 
 ## 发布保证
 
-- build 使用 `executable + args` 且 `shell:false`；所有配置路径必须留在仓库内并通过 symlink 检查。
-- 每个平台使用自己的 runner 和构建单元，产物通过一天内失效的 Actions Artifact 聚合。
-- public 源码在当前仓库发布；private 源码保留 private Release，并把同一本地字节发布到独立 public 仓库。
-- 双仓先建立 draft，先发布 private、最后发布 public；部分成功不回滚，使用同一 version、SHA 和 correlation 续跑。
-- public manifest 不包含 private 仓库名、private commit、workflow ID 或内部链接。
-- 发布成功与 incident resolved 是两个独立状态，任何一方都不能冒充另一方。
+- Extension module 只能使用冻结的 Kernel API；命令固定 `shell:false`，HTTPS 限制为 manifest 声明的精确 origin。
+- Workflow extension 只能贡献 pinned action 或 processor invocation；只有 Kernel renderer 能生成 YAML 和固定 trampoline。
+- Plan 固化 config、graph、extension code SHA-256、workflow model、当前文件字节、仓库身份和 Secret role。
+- Apply 先复核 digest、extension code 与文件快照，再执行幂等远端操作和 journal/backup 本地事务；本地失败逆序回滚。
+- GitHub dual repository 只构建一次，并向 private/public Release 上传相同本地字节；标准 manifest 与项目 `latest.json` projection 分离。
+- 发布成功与 incident resolved 是独立状态，任何一方都不能冒充另一方。
 
-## 安全边界
+## 文档
 
-Token 不进入配置、命令参数、日志、Issue、Artifact 或发布说明。签名、provider 上传、源码 Release 和 public Release 凭据只注入使用它们的步骤。自动事故只能写入 private 源码仓库。
+- [初始化、reconfigure、reinitialize 与 audit](docs/getting-started.md)
+- [本地发布](docs/workflows/local-release.md)
+- [GitHub Release](docs/workflows/github-release.md)
+- [Private-to-public](docs/workflows/private-to-public.md)
+- [Audit 与升级](docs/workflows/audit-and-upgrade.md)
+- [Stack extensions](docs/stacks/README.md)
+- [Signing extensions](docs/signing/README.md)
+- [Provider extensions](docs/providers/README.md)
+- [Extension 开发契约](docs/extensions/developing.md)
+- [`config/v2` 破坏性迁移](docs/migrations/config-v2.md)
 
-安全问题请使用 [Private vulnerability reporting](https://github.com/wearshoes/release-ops/security/advisories/new)。
-
-## 开发
-
-新增 adapter/provider 必须同时提供 manifest、实现、文档、fixture 和端到端测试。验证入口：
+## 开发验证
 
 ```bash
 node --test scripts/tests/*.test.mjs
 python -m unittest discover -s scripts/tests -p "test_*.py"
 python scripts/validate_self.py
+node scripts/validate-boundaries.mjs
+node scripts/validate-credentials.mjs
+node scripts/generate-readme.mjs --check
+git diff --check
 ```
 
 [MIT](LICENSE)

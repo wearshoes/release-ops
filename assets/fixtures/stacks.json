@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "release-ops/stack-fixtures/v1",
+  "fixtures": [
+    { "stack": "android", "files": ["gradlew", "app/build.gradle.kts"], "status": "supported", "targets": { "android": "ubuntu-latest" } },
+    { "stack": "apple", "files": ["Example.xcodeproj"], "status": "supported", "targets": { "macos": "macos-latest", "ios": "macos-latest" } },
+    { "stack": "javascript", "files": ["package.json"], "status": "supported", "targets": { "web": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "stack": "dotnet", "files": ["Example.sln"], "status": "supported", "targets": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "stack": "native", "files": ["CMakeLists.txt"], "status": "supported", "targets": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "stack": "flutter", "files": ["pubspec.yaml"], "contents": { "pubspec.yaml": "dependencies:\n  flutter:\n    sdk: flutter\n" }, "status": "supported", "targets": { "android": "ubuntu-latest", "windows": "windows-latest", "ios": "macos-latest" } },
+    { "stack": "react-native", "files": ["package.json", "android/settings.gradle"], "contents": { "package.json": "{\"dependencies\":{\"react-native\":\"1.0.0\"}}\n" }, "status": "supported", "targets": { "android": "ubuntu-latest", "ios": "macos-latest" } },
+    { "stack": "godot", "files": ["project.godot"], "status": "supported", "targets": { "linux": "ubuntu-latest", "web": "ubuntu-latest", "android": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest", "ios": "macos-latest" } },
+    { "stack": "unity", "files": ["ProjectSettings/ProjectVersion.txt"], "status": "credential-gated", "targets": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" } },
+    { "stack": "generic", "files": [], "detected": false, "status": "supported", "targets": {} },
+    { "stack": "unreal", "files": ["Example.uproject"], "status": "diagnostic", "targets": {} }
+  ]
+}

@@ -52,17 +52,17 @@ function githubFixture({ existing = false } = {}) {
     };
 }
 
-test("dual publication uploads identical local bytes and a privacy-safe v2 manifest", async () => {
+test("dual publication uploads identical local bytes and a privacy-safe v1 manifest", async () => {
     const root = await fixtureRoot("release-ops-publish-");
     const github = githubFixture();
     const result = await publishRelease({
-        config: baseConfig(), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA, github,
+        config: baseConfig({ mode: "dual-repository" }), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA, github,
         publishedAt: "2026-08-20T00:00:00Z",
     });
     const binaries = github.uploads.filter(({ name }) => name.endsWith(".bin"));
     assert.equal(binaries.length, 2);
     assert.strictEqual(binaries[0].body, binaries[1].body);
-    assert.equal(result.manifest.schemaVersion, "release-ops-release/v2");
+    assert.equal(result.manifest.schemaVersion, "release-ops/release-manifest/v1");
     assert.deepEqual(result.manifest.buildNumbers, BUILD_NUMBERS);
     assert.doesNotMatch(JSON.stringify(result.manifest), /private-owner|private-source|bbbbbbbb|workflow|correlation/iu);
     assert.match(JSON.stringify(result.manifest), /public-owner\/example-releases/u);
@@ -83,7 +83,7 @@ test("same-repository mode publishes once and keeps root README project-owned", 
 test("GitHub-disabled publication writes a local checksum manifest", async () => {
     const root = await fixtureRoot("release-ops-local-");
     const result = await publishRelease({
-        config: baseConfig({ github: false }), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA,
+        config: baseConfig(), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA,
         publishedAt: "2026-08-20T00:00:00Z",
     });
     const manifest = JSON.parse(await readFile(join(result.outputRoot, "release-manifest.json"), "utf8"));
@@ -93,7 +93,7 @@ test("GitHub-disabled publication writes a local checksum manifest", async () =>
 
 test("publisher consumes checksummed artifacts aggregated from platform build jobs", async () => {
     const root = await fixtureRoot("release-ops-aggregate-");
-    const config = baseConfig({ github: false });
+    const config = baseConfig();
     await collectBuildArtifacts(config, { root, unitId: "desktop", output: ".release-ops/upload" });
     await mkdir(join(root, ".release-ops", "collected"), { recursive: true });
     await cp(
@@ -112,7 +112,7 @@ test("draft retry reuses both releases and replaces only same-named assets", asy
     const root = await fixtureRoot("release-ops-retry-");
     const github = githubFixture({ existing: true });
     const result = await publishRelease({
-        config: baseConfig(), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA, github,
+        config: baseConfig({ mode: "dual-repository" }), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA, github,
         correlation: "11111111-2222-4333-8444-555555555555",
     });
     assert.equal(github.calls.filter(({ path, options }) => /\/releases$/u.test(path) && options.method === "POST").length, 0);
@@ -132,6 +132,6 @@ test("draft retry refuses a Release bound to a different source SHA", async () =
         return response;
     };
     await assert.rejects(publishRelease({
-        config: baseConfig(), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA, github,
+        config: baseConfig({ mode: "dual-repository" }), root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA, github,
     }), /different target/u);
 });

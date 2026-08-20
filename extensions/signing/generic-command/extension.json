@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "generic-command",
+  "type": "signing",
+  "version": "1.1.0",
+  "status": "supported",
+  "configSchemaVersion": "release-ops/extension-config/generic-command/v1",
+  "configSchema": "assets/extension-schemas/signing.schema.json",
+  "docs": "docs/signing/generic-command.md",
+  "dependencies": [
+    {
+      "capability": "built-artifacts",
+      "cardinality": "many",
+      "optional": false
+    }
+  ],
+  "questions": [
+    {
+      "id": "buildUnitIds",
+      "type": "build-unit-selection",
+      "required": true
+    }
+  ],
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "sign",
+      "stage": "sign",
+      "module": "scripts/processors/signing.mjs",
+      "entrypoint": "signProcessor",
+      "requires": [
+        {
+          "capability": "built-artifacts",
+          "cardinality": "many",
+          "optional": false
+        }
+      ],
+      "provides": [
+        {
+          "capability": "signed-artifacts",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [
+        {
+          "role": "credential",
+          "required": false,
+          "defaultName": "SIGNING_CREDENTIAL"
+        },
+        {
+          "role": "credential-2",
+          "required": false,
+          "defaultName": "SIGNING_CREDENTIAL_2"
+        },
+        {
+          "role": "credential-3",
+          "required": false,
+          "defaultName": "SIGNING_CREDENTIAL_3"
+        },
+        {
+          "role": "credential-4",
+          "required": false,
+          "defaultName": "SIGNING_CREDENTIAL_4"
+        }
+      ],
+      "permissions": {
+        "commands": [
+          {
+            "id": "sign",
+            "executable": "config:command"
+          }
+        ],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/signing.mjs"
+  ]
+}

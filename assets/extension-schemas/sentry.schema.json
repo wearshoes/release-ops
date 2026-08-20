@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/sentry-config-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization", "project", "apiBase", "schedule", "lookbackMinutes", "releaseTemplate", "debugReleaseTemplate", "distTemplate", "debugArtifacts", "issueSync", "incidentNamespace", "secretNames", "workflows"],
+  "properties": {
+    "organization": { "$ref": "#/$defs/name" },
+    "project": { "$ref": "#/$defs/name" },
+    "apiBase": { "type": "string", "pattern": "^https://.+/api/0/?$" },
+    "schedule": { "type": "string", "minLength": 9 },
+    "lookbackMinutes": { "const": 75 },
+    "releaseTemplate": { "type": "string", "minLength": 1 },
+    "debugReleaseTemplate": { "type": "string", "minLength": 1 },
+    "distTemplate": { "type": "string", "minLength": 1 },
+    "incidentNamespace": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "debugArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "path", "buildUnitId"],
+        "properties": {
+          "type": { "type": "string", "minLength": 1 },
+          "path": { "$ref": "#/$defs/path" },
+          "buildUnitId": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "issueSync": { "type": "boolean" },
+    "secretNames": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project-provision", "build-upload", "incident-read", "incident-write"],
+      "properties": {
+        "project-provision": { "$ref": "#/$defs/secret" },
+        "build-upload": { "$ref": "#/$defs/secret" },
+        "incident-read": { "$ref": "#/$defs/secret" },
+        "incident-write": { "$ref": "#/$defs/secret" }
+      }
+    },
+    "workflows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issueFile", "resolveFile", "intakeCommand", "resolveCommand"],
+      "properties": {
+        "issueFile": { "$ref": "#/$defs/path" },
+        "resolveFile": { "$ref": "#/$defs/path" },
+        "intakeCommand": { "$ref": "#/$defs/command" },
+        "resolveCommand": { "$ref": "#/$defs/command" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "path": { "type": "string", "pattern": "^(?![A-Za-z]:|/|.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$" },
+    "secret": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "args"],
+      "properties": { "executable": { "type": "string", "minLength": 1 }, "args": { "type": "array", "items": { "type": "string" } } }
+    }
+  }
+}

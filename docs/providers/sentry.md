@@ -26,7 +26,7 @@ Token 不得复用、打印、写入源码、APK、Issue 或 Artifact。应用�
 Provider 接收可信的 project、完整 source SHA、release、dist、build unit 和本地调试符号路径。R8 mapping 使用 `upload-proguard`，source map 使用 inject/upload，dSYM/PDB/ELF/WASM 等 DIF 使用 `debug-files upload` 的受限类型或自动识别，Dart symbols 映射为 Breakpad；它不执行配置中的任意命令。`apiBase` 支持 Sentry SaaS 和兼容的自托管 HTTPS `/api/0`。
 
 `releaseTemplate` 与 `distTemplate` 可引用 `version`、各 build number id、`sourceSha`、项目名
-`project`，以及已确认的 adapter 标量标识，例如 Android 的 `applicationId`。不存在的变量会让
+`project`，以及已确认的 stack 标量标识，例如 Android 的 `applicationId`。不存在的变量会让
 build hook 失败，不会降级成空字符串。启用 GitHub 时生成发布 workflow；同时启用 issue sync
 时才生成 `sentry-issues.yml` 与 `resolve-issues.yml`，禁用 provider 会事务删除未被人工修改的
 provider runtime 和 workflow。

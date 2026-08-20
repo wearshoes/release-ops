@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "unreal",
+  "type": "stack",
+  "version": "1.1.0",
+  "status": "diagnostic",
+  "configSchemaVersion": "release-ops/extension-config/unreal/v1",
+  "configSchema": "assets/extension-schemas/stack.schema.json",
+  "docs": "docs/stacks/unreal.md",
+  "dependencies": [],
+  "detection": {
+    "all": [],
+    "any": [
+      "*.uproject"
+    ],
+    "content": []
+  },
+  "questions": [],
+  "targets": {},
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "inspect",
+      "stage": "inspect",
+      "module": "scripts/processors/stack.mjs",
+      "entrypoint": "inspectProcessor",
+      "requires": [],
+      "provides": [
+        {
+          "capability": "stack-candidates",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/stack.mjs"
+  ]
+}

@@ -1,6 +1,6 @@
 # 本地发布 SOP
 
-适用于 `hosting.github.enabled=false`。初始化只生成本地 build、可选签名、SHA-256、manifest 和 changelog 打包能力，不生成 GitHub Actions、GitHub Issue 或远端 Release。
+适用于所选 release extension 的 `config.mode=local`。初始化只生成本地 build、可选签名、SHA-256、manifest 和 changelog 打包能力，不生成 GitHub Actions、GitHub Issue 或远端 Release。
 
 ## 发版前
 
@@ -12,7 +12,7 @@
 ## 固定入口
 
 ```bash
-node .release-ops/runtime/local-release.mjs --root . --version 1.2.3
+node .release-ops/runtime/kernel/local-release-entry.mjs --root . --version 1.2.3
 ```
 
 入口依次构建每个 unit、只按已启用 provider 的 manifest 动态加载并运行标准 build hook、从本地产物

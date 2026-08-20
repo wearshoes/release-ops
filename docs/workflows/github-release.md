@@ -12,7 +12,7 @@
 ## 固定入口
 
 ```bash
-node .release-ops/runtime/release-entry.mjs --root . --version 1.2.3
+node .release-ops/runtime/kernel/github-release-entry.mjs --root . --version 1.2.3
 ```
 
 入口只 dispatch 一次并固定返回的 workflow run ID。POST 结果不确定时，只按唯一 correlation 分页接管已接受 run，不重发请求。

@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { applySetupPlan, auditProject, createSetupPlan, inspectProject, writeJson } from "./setup-core.mjs";
+import { applySetupPlan, auditProject, createSetupPlan, inspectProject, routeSetup, writeJson } from "./setup-core.mjs";
 
 function parseArguments(values) {
     const command = values[0] ?? "inspect";
@@ -39,8 +39,15 @@ async function main() {
     let result;
     if (command === "inspect") {
         result = await inspectProject(root);
+    } else if (command === "reconfigure" || command === "reinitialize") {
+        const extensionIds = (args.get("--extensions") ?? "").split(",").filter(Boolean);
+        result = await routeSetup(root, command, { extensionIds });
     } else if (command === "plan") {
-        result = await createSetupPlan(root, await readJson(resolve(required(args, "--answers")), "Setup answers"));
+        result = await createSetupPlan(
+            root,
+            await readJson(resolve(required(args, "--answers")), "Setup answers"),
+            { mode: required(args, "--mode") },
+        );
     } else if (command === "apply") {
         result = await applySetupPlan(
             await readJson(resolve(required(args, "--plan")), "Setup plan"),
@@ -50,7 +57,7 @@ async function main() {
         result = await auditProject(root);
         if (!result.success) process.exitCode = 1;
     } else {
-        throw new Error("Use inspect, plan, apply, or audit");
+        throw new Error("Use inspect, reconfigure, reinitialize, plan, apply, or audit");
     }
     if (args.has("--out")) await writeJson(resolve(args.get("--out")), result);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

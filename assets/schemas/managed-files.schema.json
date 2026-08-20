@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/managed-files-v1.json",
+  "title": "Release Ops managed files state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "configDigest", "graphDigest", "workflowDigest", "files"],
+  "properties": {
+    "schemaVersion": { "const": "release-ops/managed-files/v1" },
+    "configDigest": { "$ref": "processor-graph.schema.json#/$defs/hash" },
+    "graphDigest": { "$ref": "processor-graph.schema.json#/$defs/hash" },
+    "workflowDigest": { "$ref": "processor-graph.schema.json#/$defs/hash" },
+    "files": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ownerInstanceId", "baseHash", "currentHash", "desiredHash", "mode"],
+        "properties": {
+          "ownerInstanceId": { "$ref": "config.schema.json#/$defs/id" },
+          "baseHash": { "$ref": "#/$defs/nullableHash" },
+          "currentHash": { "$ref": "#/$defs/nullableHash" },
+          "desiredHash": { "$ref": "#/$defs/nullableHash" },
+          "mode": { "enum": ["generated", "adopted"] }
+        }
+      }
+    }
+  },
+  "$defs": { "nullableHash": { "oneOf": [{ "$ref": "processor-graph.schema.json#/$defs/hash" }, { "type": "null" }] } }
+}

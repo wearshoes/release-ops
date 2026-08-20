@@ -1,5 +1,7 @@
 import { basename } from "node:path";
 
+import { incidentProviderConfig, releaseConfig } from "./config-query.mjs";
+
 export const INCIDENT_SCHEMA = "release-ops-sentry-incident/v2";
 const MARKER_PATTERN = /<!-- release-ops-sentry:v2 project=([A-Za-z0-9_-]+) issue_id=(\d+) -->/u;
 const RECORD_PATTERN = /<!-- release-ops-sentry-record:v2 ([A-Za-z0-9_-]{10,20000}) -->/u;
@@ -148,11 +150,12 @@ async function allManagedIssues(github, repository) {
 }
 
 export async function syncSentryIncidents({ config, sentry, github }) {
-    const provider = config.providers.sentry;
-    if (!provider.enabled || !provider.issueSync || !config.hosting.github.enabled) {
+    const provider = incidentProviderConfig(config);
+    const release = releaseConfig(config);
+    if (!provider.issueSync || release.mode === "local") {
         throw new Error("Sentry-to-GitHub synchronization is disabled");
     }
-    const repository = config.hosting.github.source.repository;
+    const repository = release.source.repository;
     await ensureLabels(github, repository);
     const issuePath = `/organizations/${provider.organization}/issues/?project=${encodeURIComponent(provider.project)}&query=is%3Aunresolved&sort=date&statsPeriod=${provider.lookbackMinutes}m`;
     const groups = sentry.paginate ? await sentry.paginate(issuePath) : (await sentry.request(issuePath)).data;
@@ -194,14 +197,14 @@ export async function syncSentryIncidents({ config, sentry, github }) {
 export async function resolveSentryIncident({ config, issue, commitSha, sentryRead, sentryWrite, github }) {
     if (!/^[0-9a-f]{40}$/u.test(commitSha)) throw new Error("Resolution requires a full lowercase commit SHA");
     const incident = parseIncidentBody(issue.body);
-    const provider = config.providers.sentry;
+    const provider = incidentProviderConfig(config);
     if (incident.project !== provider.project) throw new Error("Sentry project identity does not match configuration");
     const path = `/organizations/${provider.organization}/issues/${incident.issueId}/`;
     const group = (await sentryRead.request(path)).data;
     if (String(group?.id) !== incident.issueId || group?.project?.slug !== provider.project) throw new Error("Sentry group identity does not match the GitHub Issue");
     const event = (await sentryRead.request(`/issues/${incident.issueId}/events/latest/`)).data;
     if (String(event?.eventID ?? event?.event_id ?? event?.id) !== incident.eventId) throw new Error("Sentry occurrence changed after GitHub intake");
-    const repository = config.hosting.github.source.repository;
+    const repository = releaseConfig(config).source.repository;
     const markerBase = `release-ops-sentry-resolve:v2 issue_id=${incident.issueId} commit=${commitSha}`;
     const commentsResponse = await github.request(`/repos/${repository}/issues/${issue.number}/comments?per_page=100`);
     const comments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];

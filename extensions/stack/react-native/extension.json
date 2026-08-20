@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "release-ops/extension/v1",
+  "id": "react-native",
+  "type": "stack",
+  "version": "1.1.0",
+  "status": "supported",
+  "configSchemaVersion": "release-ops/extension-config/react-native/v1",
+  "configSchema": "assets/extension-schemas/stack.schema.json",
+  "docs": "docs/stacks/react-native.md",
+  "dependencies": [],
+  "detection": {
+    "all": [
+      "package.json"
+    ],
+    "any": [
+      "android/settings.gradle"
+    ],
+    "content": [
+      {
+        "path": "package.json",
+        "pattern": "[\"']react-native[\"']"
+      }
+    ]
+  },
+  "questions": [
+    {
+      "id": "buildUnits",
+      "type": "build-units",
+      "required": true
+    },
+    {
+      "id": "versioning",
+      "type": "versioning",
+      "required": true
+    }
+  ],
+  "targets": { "android": "ubuntu-latest", "ios": "macos-latest" },
+  "processors": [
+    {
+      "schemaVersion": "release-ops/processor/v1",
+      "id": "build",
+      "stage": "build",
+      "module": "scripts/processors/stack.mjs",
+      "entrypoint": "buildProcessor",
+      "requires": [],
+      "provides": [
+        {
+          "capability": "build-units",
+          "merge": "append"
+        },
+        {
+          "capability": "version-sources",
+          "merge": "append"
+        },
+        {
+          "capability": "built-artifacts",
+          "merge": "append"
+        },
+        {
+          "capability": "debug-artifacts",
+          "merge": "append"
+        }
+      ],
+      "before": [],
+      "after": [],
+      "secretRoles": [],
+      "permissions": {
+        "commands": [
+          {
+            "id": "build",
+            "executable": "config:command"
+          }
+        ],
+        "networkOrigins": []
+      }
+    }
+  ],
+  "runtimeFiles": [
+    "scripts/processors/stack.mjs"
+  ]
+}

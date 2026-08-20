@@ -5,6 +5,7 @@ import { chmod } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { isMainModule } from "./cli-entry.mjs";
+import { allBuildUnits, secretNamesForBuildUnit } from "./config-query.mjs";
 import { loadConfig } from "./config.mjs";
 
 const SENSITIVE_ENVIRONMENT = /(?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY|KEYSTORE|LICENSE|SERIAL)$/iu;
@@ -23,21 +24,26 @@ export async function runBuild(config, {
     chmodImpl = chmod,
     platform = process.platform,
 } = {}) {
-    const unit = unitId
-        ? config.build.units.find(({ id }) => id === unitId)
-        : config.build.units.length === 1 ? config.build.units[0] : null;
+    const units = allBuildUnits(config);
+    const unit = unitId ? units.find(({ id }) => id === unitId) : units.length === 1 ? units[0] : null;
     if (!unit) throw new Error("A valid --unit is required when the configuration has multiple build units");
-    for (const name of unit.requiredSecretNames ?? []) {
+    const roleNames = secretNamesForBuildUnit(config, unit.id);
+    const requiredSecretNames = (unit.requiredSecretRoles ?? []).map((role) => {
+        const name = roleNames[role];
+        if (!name) throw new Error(`Build unit ${unit.id} has no Secret name for role ${role}`);
+        return name;
+    });
+    for (const name of requiredSecretNames) {
         if (!env[name]) throw new Error(`Required build Secret is unavailable: ${name}`);
     }
-    if (config.project.adapter === "android-gradle" && platform !== "win32"
+    if (unit.target === "android" && platform !== "win32"
         && /(?:^|[\\/])gradlew$/u.test(unit.command.executable)) {
         await chmodImpl(resolve(root, "gradlew"), 0o755);
     }
     await new Promise((resolvePromise, reject) => {
         const child = spawnImpl(unit.command.executable, unit.command.args, {
             cwd: resolve(root),
-            env: buildEnvironment(env, unit.requiredSecretNames ?? []),
+            env: buildEnvironment(env, requiredSecretNames),
             shell: false,
             stdio: "inherit",
             windowsHide: true,
@@ -48,7 +54,7 @@ export async function runBuild(config, {
             else reject(new Error(`Build failed with ${signal ? `signal ${signal}` : `exit code ${code}`}`));
         });
     });
-    return { schemaVersion: "release-ops-build/v2", completed: true, unit: unit.id };
+    return { schemaVersion: "release-ops/build/v1", completed: true, unit: unit.id };
 }
 
 async function main() {

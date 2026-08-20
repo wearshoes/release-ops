@@ -1,1 +1,0 @@
-{"schemaVersion":"release-ops/adapter/v2","id":"react-native","status":"supported","docs":"docs/stacks/react-native.md","detects":["react-native","android/settings.gradle"],"artifactTypes":["platform-package"],"debugArtifactTypes":["source-map","proguard","dif"],"targets":[{"id":"android","runner":"ubuntu-latest"},{"id":"ios","runner":"macos-latest"}]}

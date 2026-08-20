@@ -1,19 +1,19 @@
-# 技术栈索引
+# Stack Extensions
 
-Setup 只读取检测到或用户选定 adapter 的页面；不要一次加载全部技术栈文档。检测有歧义时必须由用户确认 build root。
+Stack extension 自己负责 detection、版本来源、runner、build units、正式产物和 debug artifacts。Setup 只读取检测到或用户选中的 stack 文档。
 
-| Adapter | 状态 | SOP |
+| Extension | 状态 | 文档 |
 | --- | --- | --- |
-| `android-gradle` | 支持 | [Android](android.md) |
-| `apple-xcode` | 支持 | [Apple](apple.md) |
-| `javascript` | 支持 | [JavaScript](javascript.md) |
-| `dotnet` | 支持 | [.NET](dotnet.md) |
-| `native` | 支持 | [Native](native.md) |
-| `flutter` | 支持 | [Flutter](flutter.md) |
-| `react-native` | 支持 | [React Native](react-native.md) |
-| `godot` | 支持 hosted runner | [Godot](godot.md) |
-| `unity` | GameCI，凭据门禁 | [Unity](unity.md) |
-| `generic` | 显式配置 | [Generic](generic.md) |
-| `unreal` | 不支持 | [Unreal](unreal.md) |
+| `android` | supported | [Android](android.md) |
+| `apple` | supported | [Apple](apple.md) |
+| `javascript` | supported | [JavaScript](javascript.md) |
+| `dotnet` | supported | [.NET](dotnet.md) |
+| `native` | supported | [Native](native.md) |
+| `flutter` | supported | [Flutter](flutter.md) |
+| `react-native` | supported | [React Native](react-native.md) |
+| `godot` | hosted runner matrix | [Godot](godot.md) |
+| `unity` | credential-gated | [Unity](unity.md) |
+| `generic` | explicit executable/args only | [Generic](generic.md) |
+| `unreal` | diagnostic only | [Unreal](unreal.md) |
 
-所有 adapter 都使用独立 build unit、结构化命令、仓库内路径和本地 SHA-256。平台产物和 provider 调试符号是两个不同清单。
+每个 build unit 由一个 stack instance 独占。Generic 不接受 shell 字符串；self-hosted runner 必须给出原因。跨 stack 的 canonical version 和 changelog 契约必须一致后才能发布。

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/setup-answers-v1.json",
+  "title": "Release Ops setup answers",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "mode", "project", "extensions", "repositories", "managedFileAdoptions"],
+  "properties": {
+    "schemaVersion": { "const": "release-ops/setup-answers/v1" },
+    "mode": { "enum": ["initialize", "reconfigure", "reinitialize"] },
+    "project": { "$ref": "config.schema.json#/properties/project" },
+    "extensions": { "$ref": "config.schema.json#/properties/extensions" },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["instanceId", "role", "action", "repository"],
+        "properties": {
+          "instanceId": { "$ref": "config.schema.json#/$defs/id" },
+          "role": { "enum": ["source", "distribution"] },
+          "action": { "enum": ["existing", "create"] },
+          "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+          "visibility": { "enum": ["private", "public"] },
+          "defaultBranch": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+$" }
+        }
+      }
+    },
+    "managedFileAdoptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "ownerInstanceId", "sha256"],
+        "properties": {
+          "path": { "$ref": "processor.schema.json#/$defs/path" },
+          "ownerInstanceId": { "$ref": "config.schema.json#/$defs/id" },
+          "sha256": { "$ref": "processor-graph.schema.json#/$defs/hash" }
+        }
+      }
+    }
+  }
+}

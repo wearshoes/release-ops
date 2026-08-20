@@ -4,23 +4,22 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { runBuild } from "../run-build.mjs";
+import { baseConfig } from "./fixtures.mjs";
 
-test("structured Android build runs shell:false and receives only its declared Secret", async () => {
+test("structured Android build runs shell:false and receives only its declared Secret role", async () => {
     const calls = [];
     const root = process.cwd();
     const child = new EventEmitter();
-    const config = {
-        project: { adapter: "android-gradle" },
-        build: { units: [{
-            id: "android", target: "android", runner: "ubuntu-latest",
-            command: { executable: "./gradlew", args: ["assembleRelease"] },
-            requiredSecretNames: ["SIGNING_KEY"], artifacts: [{}],
-        }] },
-    };
+    const config = baseConfig({ stack: "android", signing: true });
+    const unit = config.extensions[0].config.buildUnits[0];
+    unit.id = "android";
+    unit.target = "android";
+    unit.command = { executable: "./gradlew", args: ["assembleRelease"] };
+    config.extensions[1].config.buildUnitIds = ["android"];
     const result = await runBuild(config, {
         root,
         unitId: "android",
-        env: { PATH: "bin", SIGNING_KEY: "sign", SENTRY_AUTH_TOKEN: "hidden", RELEASE_REPO_TOKEN: "hidden" },
+        env: { PATH: "bin", SIGNING_CREDENTIAL: "sign", SENTRY_AUTH_TOKEN: "hidden", RELEASE_REPO_TOKEN: "hidden" },
         platform: "linux",
         chmodImpl: async (path, mode) => calls.push({ operation: "chmod", path, mode }),
         spawnImpl: (command, args, options) => {
@@ -33,8 +32,8 @@ test("structured Android build runs shell:false and receives only its declared S
     assert.equal(calls[1].command, "./gradlew");
     assert.deepEqual(calls[1].args, ["assembleRelease"]);
     assert.equal(calls[1].options.shell, false);
-    assert.equal(calls[1].options.env.SIGNING_KEY, "sign");
+    assert.equal(calls[1].options.env.SIGNING_CREDENTIAL, "sign");
     assert.equal(calls[1].options.env.SENTRY_AUTH_TOKEN, undefined);
     assert.equal(calls[1].options.env.RELEASE_REPO_TOKEN, undefined);
-    assert.equal(result.schemaVersion, "release-ops-build/v2");
+    assert.equal(result.schemaVersion, "release-ops/build/v1");
 });

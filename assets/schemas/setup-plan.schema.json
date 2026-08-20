@@ -1,25 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/wearshoes/release-ops/schemas/setup-plan-v2.json",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/setup-plan-v1.json",
   "title": "Release Ops setup plan",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "root", "inspection", "config", "repositories", "requiredSecrets", "managedFiles", "planDigest"],
+  "required": ["schemaVersion", "mode", "root", "inspection", "config", "graph", "repositories", "requiredSecrets", "managedFiles", "planDigest"],
   "properties": {
-    "schemaVersion": { "const": "release-ops/setup-plan/v2" },
+    "schemaVersion": { "const": "release-ops/setup-plan/v1" },
+    "mode": { "enum": ["initialize", "reconfigure", "reinitialize"] },
     "root": { "type": "string", "minLength": 1 },
-    "inspection": { "type": "object" },
+    "inspection": { "$ref": "inspect.schema.json" },
     "config": { "$ref": "config.schema.json" },
+    "graph": { "$ref": "processor-graph.schema.json" },
     "repositories": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["role", "action", "identity"],
+        "required": ["instanceId", "role", "action", "identity"],
         "properties": {
+          "instanceId": { "$ref": "config.schema.json#/$defs/id" },
           "role": { "enum": ["source", "distribution"] },
           "action": { "enum": ["existing", "create"] },
-          "identity": { "$ref": "config.schema.json#/$defs/repositoryIdentity" }
+          "identity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["repository", "visibility", "defaultBranch"],
+            "properties": {
+              "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+              "visibility": { "enum": ["private", "public"] },
+              "defaultBranch": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+$" }
+            }
+          }
         }
       }
     },
@@ -28,50 +40,77 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "purpose"],
+        "required": ["instanceId", "role", "name", "required", "scope", "processors"],
         "properties": {
-          "name": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" },
-          "purpose": { "type": "string", "minLength": 1 }
-        }
-      }
-    },
-    "managedFiles": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schemaVersion", "operations", "conflicts", "adoptions"],
-      "properties": {
-        "schemaVersion": { "const": "release-ops-managed-plan/v2" },
-        "operations": { "type": "array", "items": { "$ref": "#/$defs/managedOperation" } },
-        "conflicts": { "type": "array", "items": { "type": "object" } },
-        "adoptions": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["path", "owner", "sha256"],
-            "properties": {
-              "path": { "$ref": "config.schema.json#/$defs/repositoryPath" },
-              "owner": { "type": "string", "pattern": "^(?:release|provider:[a-z0-9][a-z0-9-]{0,63})$" },
-              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-            }
+          "instanceId": { "$ref": "config.schema.json#/$defs/id" },
+          "role": { "$ref": "config.schema.json#/$defs/id" },
+          "name": { "$ref": "processor.schema.json#/$defs/secret" },
+          "required": { "type": "boolean" },
+          "scope": { "enum": ["processor", "local-only"] },
+          "processors": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/nodeId" }
           }
         }
       }
     },
-    "planDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    "managedFiles": { "$ref": "#/$defs/managedPlan" },
+    "planDigest": { "$ref": "processor-graph.schema.json#/$defs/hash" }
   },
   "$defs": {
-    "nullableHash": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "null" }] },
-    "managedOperation": {
+    "nodeId": { "type": "string", "pattern": "^[a-z0-9-]+:[a-z0-9-]+$" },
+    "nullableHash": {
+      "oneOf": [
+        { "$ref": "processor-graph.schema.json#/$defs/hash" },
+        { "type": "null" }
+      ]
+    },
+    "operation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "operation", "baseHash", "currentHash", "desiredHash"],
+      "required": ["path", "operation", "ownerInstanceId", "baseHash", "currentHash", "desiredHash", "mode"],
       "properties": {
-        "path": { "type": "string", "minLength": 1 },
-        "operation": { "enum": ["unchanged", "add", "update", "delete"] },
+        "path": { "$ref": "processor.schema.json#/$defs/path" },
+        "operation": { "enum": ["add", "update", "delete", "unchanged"] },
+        "ownerInstanceId": { "$ref": "config.schema.json#/$defs/id" },
         "baseHash": { "$ref": "#/$defs/nullableHash" },
         "currentHash": { "$ref": "#/$defs/nullableHash" },
-        "desiredHash": { "$ref": "#/$defs/nullableHash" }
+        "desiredHash": { "$ref": "#/$defs/nullableHash" },
+        "mode": { "enum": ["generated", "adopted"] }
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "reason", "currentHash"],
+      "properties": {
+        "path": { "$ref": "processor.schema.json#/$defs/path" },
+        "reason": { "enum": ["managed-file-changed", "unmanaged-file-exists"] },
+        "expectedHash": { "$ref": "#/$defs/nullableHash" },
+        "currentHash": { "$ref": "processor-graph.schema.json#/$defs/hash" }
+      }
+    },
+    "adoption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "ownerInstanceId", "sha256"],
+      "properties": {
+        "path": { "$ref": "processor.schema.json#/$defs/path" },
+        "ownerInstanceId": { "$ref": "config.schema.json#/$defs/id" },
+        "sha256": { "$ref": "processor-graph.schema.json#/$defs/hash" }
+      }
+    },
+    "managedPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operations", "conflicts", "workflowDigest", "adoptions"],
+      "properties": {
+        "schemaVersion": { "const": "release-ops/managed-plan/v1" },
+        "operations": { "type": "array", "items": { "$ref": "#/$defs/operation" } },
+        "conflicts": { "type": "array", "items": { "$ref": "#/$defs/conflict" } },
+        "workflowDigest": { "$ref": "processor-graph.schema.json#/$defs/hash" },
+        "adoptions": { "type": "array", "items": { "$ref": "#/$defs/adoption" } }
       }
     }
   }

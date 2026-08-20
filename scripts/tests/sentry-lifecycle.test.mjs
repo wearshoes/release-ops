@@ -7,12 +7,12 @@ import { applyResolutions, planResolutions } from "../sentry-resolver.mjs";
 import { baseConfig } from "./fixtures.mjs";
 
 function config() {
-    return baseConfig({ sentry: true });
+    return baseConfig({ mode: "dual-repository", sentry: true });
 }
 
 function group(status = "unresolved") {
     return {
-        id: "1234", shortId: "EXAMPLE-1", permalink: "https://owner.sentry.io/issues/1234/?query=private",
+        id: "1234", shortId: "EXAMPLE-1", permalink: "https://sentry.io/issues/1234/?query=private",
         status, level: "error", firstSeen: "2026-08-20T00:00:00Z", lastSeen: "2026-08-20T01:00:00Z",
         count: "3", project: { slug: "example" }, metadata: { type: "TypeError", value: "secret prompt" },
     };
@@ -30,7 +30,7 @@ function event() {
 }
 
 test("sanitizer excludes messages, user, request, locals, and source paths", () => {
-    const incident = sanitizeSentryIncident(group(), event(), { project: "example", host: "owner.sentry.io" });
+    const incident = sanitizeSentryIncident(group(), event(), { project: "example", host: "sentry.io" });
     const rendered = JSON.stringify(renderIncident(incident));
     assert.doesNotMatch(rendered, /secret prompt|private@example|private body|github_pat|C:\/private/iu);
     assert.match(rendered, /Reader\.ts/u);
@@ -78,7 +78,7 @@ test("sync uses a 75-minute overlap and creates one fixed-schema Issue", async (
 });
 
 test("resolver records start/applied markers around the non-replayed Sentry write", async () => {
-    const incident = sanitizeSentryIncident(group(), event(), { project: "example", host: "owner.sentry.io" });
+    const incident = sanitizeSentryIncident(group(), event(), { project: "example", host: "sentry.io" });
     const issue = { number: 7, state: "open", ...renderIncident(incident), labels: [{ name: "sentry" }, { name: "automated-error" }] };
     const order = [];
     const github = {
@@ -102,7 +102,7 @@ test("resolver records start/applied markers around the non-replayed Sentry writ
 });
 
 test("an unresolved start marker blocks replay of an uncertain Sentry PUT", async () => {
-    const incident = sanitizeSentryIncident(group(), event(), { project: "example", host: "owner.sentry.io" });
+    const incident = sanitizeSentryIncident(group(), event(), { project: "example", host: "sentry.io" });
     const issue = { number: 7, ...renderIncident(incident) };
     let writes = 0;
     const github = { request: async (path) => path.endsWith("comments?per_page=100")

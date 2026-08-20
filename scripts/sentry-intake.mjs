@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
+import { incidentProviderConfig, releaseConfig } from "./config-query.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { parseIncidentBody } from "./sentry-incidents.mjs";
 
@@ -19,8 +20,8 @@ function sanitizedIssue(issue, expectedRepository, expectedProject) {
 }
 
 export async function intake({ config, github, command, issueNumber = null }) {
-    const repository = config.hosting.github.source.repository;
-    const project = config.providers.sentry.project;
+    const repository = releaseConfig(config).source.repository;
+    const project = incidentProviderConfig(config).project;
     if (command === "show") {
         if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) throw new Error("show requires a positive Issue number");
         const issue = (await github.request(`/repos/${repository}/issues/${issueNumber}`)).data;
@@ -41,7 +42,7 @@ async function main() {
     const issueIndex = process.argv.indexOf("--issue");
     const root = resolve(rootIndex >= 0 ? process.argv[rootIndex + 1] : process.cwd());
     const config = await loadConfig(root);
-    const repository = config.hosting.github.source.repository;
+    const repository = releaseConfig(config).source.repository;
     const result = await intake({
         config,
         github: createGitHubClient({ sourceRepository: repository, sourceToken: process.env.github_token ?? process.env.GITHUB_TOKEN }),

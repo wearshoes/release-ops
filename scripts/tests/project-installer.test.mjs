@@ -1,161 +1,139 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { validateConfig } from "../config.mjs";
-import { installProjectFiles, normalizeManagedTextBytes, planProjectFiles, renderPublishWorkflow } from "../project-installer.mjs";
-import { baseConfig, fixtureRoot } from "./fixtures.mjs";
+import { applySetupPlan, createSetupPlan } from "../setup-core.mjs";
+import { executeNode } from "../execute.mjs";
+import { answersFor, baseConfig, fixtureRoot } from "./fixtures.mjs";
 
-function sha256(value) {
+function hash(value) {
     return createHash("sha256").update(value).digest("hex");
 }
 
-test("managed template bytes are checkout-independent UTF-8 with LF endings", () => {
-    const windowsCheckout = Buffer.from("first\r\n第二行\rlast\r\n", "utf8");
-    const unixCheckout = Buffer.from("first\n第二行\nlast\n", "utf8");
-    assert.deepEqual(normalizeManagedTextBytes(windowsCheckout), unixCheckout);
-    assert.equal(sha256(normalizeManagedTextBytes(windowsCheckout)), sha256(unixCheckout));
+function repositoryDecisions() {
+    return [
+        { instanceId: "release", role: "source", action: "existing", repository: "private-owner/private-source" },
+        { instanceId: "release", role: "distribution", action: "existing", repository: "public-owner/example-releases" },
+    ];
+}
+
+function fakeGitHub() {
+    const repositories = {
+        "private-owner/private-source": {
+            full_name: "private-owner/private-source", visibility: "private", default_branch: "main", archived: false, disabled: false,
+        },
+        "public-owner/example-releases": {
+            full_name: "public-owner/example-releases", visibility: "public", default_branch: "main", archived: false, disabled: false,
+        },
+    };
+    return { request: async (path) => ({ data: repositories[path.replace("/repos/", "")] }) };
+}
+
+test("apply copies only selected extension runtime and writes v1 digests", async () => {
+    const root = await fixtureRoot("release-ops-selected-runtime-");
+    const plan = await createSetupPlan(root, answersFor(baseConfig()), { token: null });
+    const result = await applySetupPlan(plan, plan.planDigest, { token: null });
+    assert.equal(result.managedFiles.schemaVersion, "release-ops/managed-files/v1");
+    assert.equal(result.managedFiles.configDigest, plan.graph.configDigest);
+    assert.equal(result.managedFiles.graphDigest, plan.graph.graphDigest);
+    const installed = await readdir(join(root, ".release-ops", "runtime", "extensions"));
+    assert.deepEqual(installed.sort(), ["application", "release"]);
+    await assert.rejects(access(join(root, ".release-ops", "runtime", "extensions", "sentry")), /ENOENT/u);
+    await assert.rejects(access(join(root, ".release-ops", "runtime", "adapters")), /ENOENT/u);
 });
 
-test("generated workflow scopes build, Sentry, and release Secrets to their steps", async () => {
-    const config = structuredClone(baseConfig({ sentry: true }));
-    config.build.units[0].requiredSecretNames = ["SIGNING_KEY"];
-    const workflow = renderPublishWorkflow(validateConfig(config));
-    assert.match(workflow, /runs-on: windows-latest/u);
-    assert.match(workflow, /name: Build desktop[\s\S]*env:\n\s+SIGNING_KEY:/u);
-    assert.match(workflow, /Upload sentry debug artifacts[\s\S]*SENTRY_ORG_CI_TOKEN:/u);
-    assert.match(workflow, /Publish locally built artifacts[\s\S]*RELEASE_REPO_TOKEN:/u);
-    assert.doesNotMatch(workflow, /jobs:\n\s+env:/u);
-    assert.equal((workflow.match(/run-build\.mjs/gu) ?? []).length, 1);
-    assert.match(workflow, /download-artifact@[0-9a-f]{40}/u);
-    const parsed = spawnSync("python", ["-c", "import sys, yaml; yaml.safe_load(sys.stdin.read())"], {
-        input: workflow,
-        encoding: "utf8",
-        windowsHide: true,
-    });
-    assert.equal(parsed.status, 0, parsed.stderr);
+test("reconfigure deletes disabled extension runtime without retaining unselected stacks", async () => {
+    const root = await fixtureRoot("release-ops-disable-");
+    const enabled = baseConfig({ sentry: true });
+    enabled.extensions.at(-1).config.issueSync = false;
+    const initial = await createSetupPlan(root, answersFor(enabled), { token: null });
+    await applySetupPlan(initial, initial.planDigest, { token: null });
+    const next = await createSetupPlan(root, answersFor(baseConfig(), "reconfigure"), { token: null });
+    assert.equal(next.managedFiles.operations.some(({ path, operation }) =>
+        path.includes("runtime/extensions/sentry/") && operation === "delete"), true);
+    await applySetupPlan(next, next.planDigest, { token: null });
+    await assert.rejects(access(join(root, ".release-ops", "runtime", "extensions", "sentry")), /ENOENT/u);
+    assert.deepEqual((await readdir(join(root, ".release-ops", "runtime", "extensions"))).sort(), ["application", "release"]);
 });
 
-test("Godot uses target-specific hosted runners and Unity uses credential-gated GameCI", () => {
-    const godot = structuredClone(baseConfig());
-    godot.project = { name: "Game", adapter: "godot", adapterOptions: { godotVersion: "4.4.1" } };
-    godot.build.units[0].target = "windows";
-    godot.build.units[0].runner = "windows-latest";
-    const godotWorkflow = renderPublishWorkflow(validateConfig(godot));
-    assert.match(godotWorkflow, /setup-godot@[0-9a-f]{40}/u);
-    assert.match(godotWorkflow, /runs-on: windows-latest/u);
-
-    const selfHostedGodot = structuredClone(godot);
-    selfHostedGodot.build.units[0].runner = "self-hosted";
-    selfHostedGodot.build.units[0].selfHostedReason = "proprietary console SDK";
-    const selfHostedWorkflow = renderPublishWorkflow(validateConfig(selfHostedGodot));
-    assert.match(selfHostedWorkflow, /runs-on: self-hosted/u);
-    assert.doesNotMatch(selfHostedWorkflow, /setup-godot@/u);
-
-    const unity = structuredClone(baseConfig());
-    unity.project = { name: "Unity Game", adapter: "unity", adapterOptions: { license: "personal", projectPath: "." } };
-    delete unity.build.units[0].command;
-    const workflow = renderPublishWorkflow(validateConfig(unity));
-    assert.match(workflow, /unity-builder@[0-9a-f]{40}/u);
-    assert.match(workflow, /UNITY_LICENSE: \$\{\{ secrets\.UNITY_LICENSE \}\}/u);
-    assert.doesNotMatch(workflow, /UNITY_SERIAL:/u);
-});
-
-test("disabling a provider transactionally deletes its unchanged managed workflows", async () => {
-    const root = await fixtureRoot("release-ops-delete-");
-    await installProjectFiles(root, baseConfig({ sentry: true }));
-    const plan = await planProjectFiles(root, baseConfig({ sentry: false }));
-    assert.equal(plan.operations.find(({ path }) => path === ".github/workflows/sentry-issues.yml").operation, "delete");
-    await installProjectFiles(root, baseConfig({ sentry: false }));
-    await assert.rejects(access(join(root, ".github", "workflows", "sentry-issues.yml")), /ENOENT/u);
-});
-
-test("changed managed files and unmanaged workflows stop the whole transaction", async () => {
-    const root = await fixtureRoot("release-ops-conflict-");
-    await installProjectFiles(root, baseConfig({ sentry: true }));
-    const managed = join(root, ".github", "workflows", "sentry-issues.yml");
-    await writeFile(managed, "project-owned change\n", "utf8");
-    await assert.rejects(installProjectFiles(root, baseConfig({ sentry: false })), /Managed file conflicts/u);
-    assert.equal(await readFile(managed, "utf8"), "project-owned change\n");
-
-    const other = await fixtureRoot("release-ops-unmanaged-");
-    await mkdir(join(other, ".github", "workflows"), { recursive: true });
-    await writeFile(join(other, ".github", "workflows", "publish-release.yml"), "project-owned\n", "utf8");
-    await assert.rejects(installProjectFiles(other, baseConfig()), /Managed file conflicts/u);
-});
-
-test("exact-hash adoption preserves a mature project workflow and keeps conflict protection", async () => {
+test("exact workflow adoption preserves bytes and requires matching owner and SHA-256", async () => {
     const root = await fixtureRoot("release-ops-adopt-");
-    const workflowPath = join(root, ".github", "workflows", "publish-release.yml");
-    const workflow = "name: Project-owned compatible release\n";
+    const path = join(root, ".github", "workflows", "publish-release.yml");
+    const bytes = "name: Existing project release\r\n";
     await mkdir(join(root, ".github", "workflows"), { recursive: true });
-    await writeFile(workflowPath, workflow, "utf8");
-    const adoptions = [{
+    await writeFile(path, bytes, "utf8");
+    const config = baseConfig({ mode: "dual-repository" });
+    const answers = answersFor(config, "initialize", repositoryDecisions());
+    answers.managedFileAdoptions = [{
         path: ".github/workflows/publish-release.yml",
-        owner: "release",
-        sha256: sha256(workflow),
+        ownerInstanceId: "release",
+        sha256: hash(bytes),
     }];
+    const github = fakeGitHub();
+    const plan = await createSetupPlan(root, answers, { token: "metadata", github });
+    assert.equal(plan.managedFiles.operations.find(({ path: candidate }) => candidate.endsWith("publish-release.yml")).operation, "unchanged");
+    await applySetupPlan(plan, plan.planDigest, { token: "metadata", github });
+    assert.equal(await readFile(path, "utf8"), bytes);
 
-    const initial = await planProjectFiles(root, baseConfig(), { adoptions });
-    assert.equal(initial.conflicts.length, 0);
-    assert.equal(initial.operations.find(({ path }) => path.endsWith("publish-release.yml")).operation, "unchanged");
-    await installProjectFiles(root, baseConfig(), { adoptions, expectedPlan: {
-        schemaVersion: initial.schemaVersion,
-        operations: initial.operations,
-        conflicts: initial.conflicts,
-        adoptions: initial.adoptions,
-    } });
-    assert.equal(await readFile(workflowPath, "utf8"), workflow);
-
-    const stable = await planProjectFiles(root, baseConfig());
-    assert.deepEqual(stable.adoptions, adoptions);
-    await writeFile(workflowPath, "name: Changed after adoption\n", "utf8");
-    const changed = await planProjectFiles(root, baseConfig());
-    assert.equal(changed.conflicts.some(({ path, reason }) => path.endsWith("publish-release.yml") && reason === "managed-file-changed"), true);
+    const wrong = structuredClone(answers);
+    wrong.mode = "reconfigure";
+    wrong.managedFileAdoptions[0].sha256 = "0".repeat(64);
+    await assert.rejects(createSetupPlan(root, wrong, { token: "metadata", github }), /SHA-256 does not match/u);
 });
 
-test("adoption is restricted to active managed workflows, matching owners, and exact current bytes", async () => {
-    const root = await fixtureRoot("release-ops-adopt-restricted-");
-    await assert.rejects(
-        planProjectFiles(root, baseConfig(), { adoptions: [{ path: "README.md", owner: "release", sha256: "0".repeat(64) }] }),
-        /not an active Release Ops workflow target/u,
-    );
-    await assert.rejects(
-        planProjectFiles(root, baseConfig(), { adoptions: [{
-            path: ".release-ops/runtime/run-build.mjs", owner: "release", sha256: "0".repeat(64),
-        }] }),
-        /not an active Release Ops workflow target/u,
-    );
-    await mkdir(join(root, ".github", "workflows"), { recursive: true });
-    await writeFile(join(root, ".github", "workflows", "publish-release.yml"), "name: Existing\n", "utf8");
-    await assert.rejects(
-        planProjectFiles(root, baseConfig(), { adoptions: [{
-            path: ".github/workflows/publish-release.yml", owner: "provider:sentry", sha256: sha256("name: Existing\n"),
-        }] }),
-        /owner does not match its workflow/u,
-    );
-    await assert.rejects(
-        planProjectFiles(root, baseConfig(), { adoptions: [{
-            path: ".github/workflows/publish-release.yml", owner: "release", sha256: "0".repeat(64),
-        }] }),
-        /SHA-256 does not match/u,
-    );
+test("apply revalidates current target hashes after confirmation", async () => {
+    const root = await fixtureRoot("release-ops-snapshot-");
+    const plan = await createSetupPlan(root, answersFor(baseConfig()), { token: null });
+    await mkdir(join(root, ".release-ops", "runtime", "kernel"), { recursive: true });
+    await writeFile(join(root, ".release-ops", "runtime", "kernel", "execute.mjs"), "changed\n", "utf8");
+    await assert.rejects(applySetupPlan(plan, plan.planDigest, { token: null }), /files or workflow model changed/u);
 });
 
-test("disabling a provider deletes its unchanged adopted workflows", async () => {
-    const root = await fixtureRoot("release-ops-adopt-delete-");
-    const target = join(root, ".github", "workflows", "sentry-issues.yml");
-    const workflow = "name: Project Sentry sync\n";
-    await mkdir(join(root, ".github", "workflows"), { recursive: true });
-    await writeFile(target, workflow, "utf8");
-    await installProjectFiles(root, baseConfig({ sentry: true }), { adoptions: [{
-        path: ".github/workflows/sentry-issues.yml",
-        owner: "provider:sentry",
-        sha256: sha256(workflow),
-    }] });
-    const plan = await planProjectFiles(root, baseConfig({ sentry: false }));
-    assert.equal(plan.operations.find(({ path }) => path === ".github/workflows/sentry-issues.yml").operation, "delete");
+test("transaction failure restores the original filesystem", async () => {
+    const root = await fixtureRoot("release-ops-rollback-");
+    const plan = await createSetupPlan(root, answersFor(baseConfig()), { token: null });
+    await assert.rejects(applySetupPlan(plan, plan.planDigest, { token: null, failAfter: 2 }), /Injected transaction failure/u);
+    await assert.rejects(access(join(root, ".release-ops", "config.json")), /ENOENT/u);
+    await assert.rejects(access(join(root, ".release-ops", "processor-graph.json")), /ENOENT/u);
+});
+
+test("installed processor modules execute from the selected instance runtime", async () => {
+    const root = await fixtureRoot("release-ops-installed-execute-");
+    const plan = await createSetupPlan(root, answersFor(baseConfig()), { token: null });
+    await applySetupPlan(plan, plan.planDigest, { token: null });
+    const result = await executeNode({
+        root,
+        nodeId: "release:publish",
+        operation: "publish",
+        arguments: ["1.2.3", JSON.stringify({ windows: 9 }), "b".repeat(40), "installed-runtime"],
+    });
+    assert.equal(result.mode, "local");
+    assert.equal(JSON.parse(await readFile(
+        join(root, "dist", "releases", "v1.2.3", "release-manifest.json"),
+        "utf8",
+    )).schemaVersion, "release-ops/release-manifest/v1");
+});
+
+test("installed local release entry executes the selected graph and writes output", async () => {
+    const root = await fixtureRoot("release-ops-local-entry-");
+    const plan = await createSetupPlan(root, answersFor(baseConfig()), { token: null });
+    await applySetupPlan(plan, plan.planDigest, { token: null });
+    execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Release Ops Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"], {
+        cwd: root, stdio: "ignore",
+    });
+    const output = execFileSync(process.execPath, [
+        join(root, ".release-ops", "runtime", "kernel", "local-release-entry.mjs"),
+        "--root", root,
+        "--version", "1.2.3",
+    ], { cwd: root, encoding: "utf8" });
+    assert.equal(JSON.parse(output).schemaVersion, "release-ops/local-release-result/v1");
+    assert.equal(JSON.parse(await readFile(
+        join(root, "dist", "releases", "v1.2.3", "release-manifest.json"),
+        "utf8",
+    )).version, "1.2.3");
 });

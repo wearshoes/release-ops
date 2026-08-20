@@ -7,6 +7,7 @@ import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
 import { readCanonicalVersion } from "./release-publisher.mjs";
 import { resolveRepositoryPath } from "./path-safety.mjs";
+import { stackConfigs } from "./config-query.mjs";
 
 function applyTemplate(template, version) {
     return template.replaceAll("{version}", version);
@@ -17,13 +18,15 @@ export async function preflightRelease(config, { root = process.cwd(), version, 
     const canonical = await readCanonicalVersion(config, root);
     if (canonical.version !== version) throw new Error("Canonical version does not match the requested release");
     if (JSON.stringify(canonical.buildNumbers) !== JSON.stringify(buildNumbers)) throw new Error("Canonical build numbers do not match the requested release");
-    const changelog = await resolveRepositoryPath(root, applyTemplate(config.versioning.changelogPattern, version), {
+    const versioning = stackConfigs(config)[0]?.versioning;
+    if (!versioning) throw new Error("No stack extension provides versioning");
+    const changelog = await resolveRepositoryPath(root, applyTemplate(versioning.changelogPattern, version), {
         name: "release changelog",
         mustExist: true,
     });
     const text = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(changelog));
     if (!text.trim()) throw new Error("Release changelog is empty");
-    if (config.versioning.requiresChinese && !/[\u3400-\u9fff]/u.test(text)) throw new Error("Release changelog must contain Chinese");
+    if (versioning.requiresChinese && !/[\u3400-\u9fff]/u.test(text)) throw new Error("Release changelog must contain Chinese");
     return { schemaVersion: "release-ops-preflight/v2", success: true, version, buildNumbers, sourceSha, changelog };
 }
 

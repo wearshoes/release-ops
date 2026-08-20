@@ -1,273 +1,142 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { adapterById, providerById } from "./provider-registry.mjs";
-import { assertRelativeRepositoryPath } from "./path-safety.mjs";
+import { loadExtensions } from "./extension-registry.mjs";
+import { validateSchema } from "./schema.mjs";
+import { stableJson, sha256 } from "./stable.mjs";
 
-export const CONFIG_SCHEMA = "release-ops/config/v2";
-export const PLAN_SCHEMA = "release-ops/setup-plan/v2";
-export const AUDIT_SCHEMA = "release-ops/audit/v2";
-export const RELEASE_SCHEMA = "release-ops-release/v2";
+export const CONFIG_SCHEMA = "release-ops/config/v1";
+export const RELEASE_SCHEMA = "release-ops/release-manifest/v1";
 
-const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
-const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
-const SECRET_NAME_PATTERN = /^[A-Z_][A-Z0-9_]{0,99}$/u;
-const SECRET_VALUE_KEY = /(?:token|secret|password|privatekey|keystore)/iu;
-
-function object(value, name) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
-}
-
-function string(value, name, pattern = null) {
-    if (typeof value !== "string" || !value.trim() || (pattern && !pattern.test(value))) throw new Error(`${name} is invalid`);
-}
-
-function optionalString(value, name, pattern = null) {
-    if (value !== null && value !== undefined) string(value, name, pattern);
-}
+const ID = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const CREDENTIAL_VALUE = /(?:github_pat_|ghp_|sntrys_|-----BEGIN [A-Z ]*PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._-]{16,})/iu;
+const CREDENTIAL_KEY = /^(?:token|password|secret|secretValue|privateKey|keystoreBase64)$/iu;
 
 function exactKeys(value, name, allowed) {
-    for (const key of Object.keys(value)) {
-        if (!allowed.has(key)) throw new Error(`${name}.${key} is not supported`);
-    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
+    for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`${name}.${key} is not supported`);
 }
 
-function stringArray(value, name, pattern = null) {
-    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry || (pattern && !pattern.test(entry)))) {
-        throw new Error(`${name} must be an array of valid strings`);
-    }
-}
-
-function noCredentialValues(value, path = "config") {
-    if (Array.isArray(value)) return value.forEach((child, index) => noCredentialValues(child, `${path}[${index}]`));
+function rejectCredentialValues(value, path = "config") {
+    if (typeof value === "string" && CREDENTIAL_VALUE.test(value)) throw new Error(`${path} contains credential material`);
+    if (Array.isArray(value)) return value.forEach((item, index) => rejectCredentialValues(item, `${path}[${index}]`));
     if (!value || typeof value !== "object") return;
-    for (const [key, child] of Object.entries(value)) {
-        const normalized = key.replaceAll(/[^A-Za-z0-9]/gu, "").toLowerCase();
-        if (SECRET_VALUE_KEY.test(normalized) && !["requiredsecretnames", "requiredsecrets"].includes(normalized)) {
-            throw new Error(`${path}.${key} may not contain credential material`);
-        }
-        noCredentialValues(child, `${path}.${key}`);
+    for (const [key, item] of Object.entries(value)) {
+        if (CREDENTIAL_KEY.test(key)) throw new Error(`${path}.${key} may not store credential material`);
+        rejectCredentialValues(item, `${path}.${key}`);
     }
 }
 
-function repositoryIdentity(value, name, visibility = null) {
-    object(value, name);
-    exactKeys(value, name, new Set(["repository", "owner", "name", "visibility", "defaultBranch"]));
-    string(value.repository, `${name}.repository`, REPOSITORY_PATTERN);
-    string(value.owner, `${name}.owner`, /^[A-Za-z0-9_.-]+$/u);
-    string(value.name, `${name}.name`, /^[A-Za-z0-9_.-]+$/u);
-    if (value.repository !== `${value.owner}/${value.name}`) throw new Error(`${name} remote identity is inconsistent`);
-    string(value.defaultBranch, `${name}.defaultBranch`, /^[A-Za-z0-9._/-]+$/u);
-    if (visibility && value.visibility !== visibility) throw new Error(`${name}.visibility must be ${visibility}`);
-    if (!visibility && !["private", "public"].includes(value.visibility)) throw new Error(`${name}.visibility is invalid`);
-}
-
-function command(value, name) {
-    object(value, name);
-    if (Object.hasOwn(value, "shell")) throw new Error(`${name}.shell is forbidden`);
-    exactKeys(value, name, new Set(["executable", "args"]));
-    string(value.executable, `${name}.executable`);
-    stringArray(value.args, `${name}.args`);
-}
-
-function artifact(value, name) {
-    object(value, name);
-    exactKeys(value, name, new Set(["id", "path", "nameTemplate", "contentType", "platform", "architecture"]));
-    string(value.id, `${name}.id`, ID_PATTERN);
-    assertRelativeRepositoryPath(value.path, `${name}.path`);
-    string(value.nameTemplate, `${name}.nameTemplate`);
-    string(value.contentType, `${name}.contentType`);
-    string(value.platform, `${name}.platform`);
-    string(value.architecture, `${name}.architecture`);
-}
-
-function buildUnit(value, index, adapter) {
-    const name = `build.units[${index}]`;
-    object(value, name);
-    exactKeys(value, name, new Set(["id", "target", "runner", "selfHostedReason", "command", "requiredSecretNames", "artifacts"]));
-    string(value.id, `${name}.id`, ID_PATTERN);
-    string(value.target, `${name}.target`, ID_PATTERN);
-    string(value.runner, `${name}.runner`, /^(?:(?:ubuntu|windows|macos)-(?:latest|\d+(?:\.\d+)?)|self-hosted)$/u);
-    if (value.runner === "self-hosted") {
-        if (!adapter.selfHostedFallback) throw new Error(`${name} cannot use a self-hosted runner with ${adapter.id}`);
-        string(value.selfHostedReason, `${name}.selfHostedReason`);
-    } else if (value.selfHostedReason !== undefined) {
-        throw new Error(`${name}.selfHostedReason is only valid for self-hosted runners`);
-    }
-    if (adapter.id === "unity") {
-        if (value.command !== undefined && value.command !== null) command(value.command, `${name}.command`);
-    } else {
-        command(value.command, `${name}.command`);
-    }
-    stringArray(value.requiredSecretNames ?? [], `${name}.requiredSecretNames`, SECRET_NAME_PATTERN);
-    if (!Array.isArray(value.artifacts) || !value.artifacts.length) throw new Error(`${name}.artifacts must not be empty`);
-    value.artifacts.forEach((entry, artifactIndex) => artifact(entry, `${name}.artifacts[${artifactIndex}]`));
-    if (adapter.id !== "generic" && value.runner !== "self-hosted") {
-        const target = adapter.targets.find((entry) => entry.id === value.target && entry.runner === value.runner);
-        if (!target) throw new Error(`${name} target/runner is unsupported by ${adapter.id}`);
-    }
-}
-
-function versionSource(value, name) {
-    object(value, name);
-    exactKeys(value, name, new Set(["file", "reader", "key"]));
-    assertRelativeRepositoryPath(value.file, `${name}.file`);
-    if (!["properties", "json", "text", "gradle-properties", "package-json", "pubspec", "godot", "unity"].includes(value.reader)) {
-        throw new Error(`${name}.reader is unsupported`);
-    }
-    string(value.key, `${name}.key`);
-}
-
-function validateProviderConfig(id, provider, githubEnabled) {
-    const manifest = providerById(id);
-    if (!manifest) throw new Error(`providers.${id} is not installed`);
-    object(provider, `providers.${id}`);
-    if (typeof provider.enabled !== "boolean") throw new Error(`providers.${id}.enabled must be boolean`);
-    if (provider.schemaVersion !== manifest.configSchemaVersion) throw new Error(`providers.${id}.schemaVersion is unsupported`);
-    if (id === "sentry") {
-        exactKeys(provider, "providers.sentry", new Set(provider.enabled ? [
-            "schemaVersion", "enabled", "organization", "project", "apiBase", "issueSync", "lookbackMinutes", "schedule",
-            "releaseTemplate", "distTemplate", "debugArtifacts",
-        ] : ["schemaVersion", "enabled"]));
-    }
-    if (!provider.enabled) return;
-    if (id === "sentry") {
-        string(provider.organization, "providers.sentry.organization", /^[A-Za-z0-9_-]+$/u);
-        string(provider.project, "providers.sentry.project", /^[A-Za-z0-9_-]+$/u);
-        string(provider.apiBase, "providers.sentry.apiBase");
-        const base = new URL(provider.apiBase);
-        if (base.protocol !== "https:" || !base.pathname.endsWith("/api/0")) throw new Error("providers.sentry.apiBase must be an HTTPS /api/0 endpoint");
-        if (typeof provider.issueSync !== "boolean") throw new Error("providers.sentry.issueSync must be boolean");
-        if (provider.issueSync && !githubEnabled) throw new Error("Sentry issueSync requires GitHub");
-        if (!Number.isSafeInteger(provider.lookbackMinutes) || provider.lookbackMinutes < 75) {
-            throw new Error("providers.sentry.lookbackMinutes must be at least 75");
-        }
-        if (!/^[-*/0-9,]+\s+[-*/0-9,]+\s+[-*/0-9,]+\s+[-*/0-9,]+\s+[-*/0-9,]+$/u.test(provider.schedule)) {
-            throw new Error("providers.sentry.schedule is invalid");
-        }
-        optionalString(provider.releaseTemplate, "providers.sentry.releaseTemplate");
-        optionalString(provider.distTemplate, "providers.sentry.distTemplate");
-        if (!Array.isArray(provider.debugArtifacts ?? [])) throw new Error("providers.sentry.debugArtifacts must be an array");
-        for (const [index, debugArtifact] of (provider.debugArtifacts ?? []).entries()) {
-            object(debugArtifact, `providers.sentry.debugArtifacts[${index}]`);
-            exactKeys(debugArtifact, `providers.sentry.debugArtifacts[${index}]`, new Set(["type", "path", "unit"]));
-            assertRelativeRepositoryPath(debugArtifact.path, `providers.sentry.debugArtifacts[${index}].path`);
-            if (!["proguard", "source-map", "dif", "dart-symbol", "bcsymbolmap", "breakpad", "dsym", "elf", "jvm", "pdb", "pe", "portablepdb", "sourcebundle", "wasm"].includes(debugArtifact.type)) {
-                throw new Error(`providers.sentry.debugArtifacts[${index}].type is unsupported`);
+export async function validateConfig(input, { extensions = null } = {}) {
+    const registry = extensions ?? await loadExtensions();
+    exactKeys(input, "config", new Set(["schemaVersion", "project", "extensions"]));
+    if (input.schemaVersion !== CONFIG_SCHEMA) throw new Error(`schemaVersion must be ${CONFIG_SCHEMA}`);
+    exactKeys(input.project, "project", new Set(["name"]));
+    if (typeof input.project.name !== "string" || !input.project.name.trim()) throw new Error("project.name is invalid");
+    if (!Array.isArray(input.extensions) || input.extensions.length < 2) throw new Error("extensions must contain a stack and release instance");
+    const instanceIds = new Set();
+    let stackCount = 0;
+    let releaseCount = 0;
+    const buildUnitIds = new Set();
+    for (const [index, instance] of input.extensions.entries()) {
+        exactKeys(instance, `extensions[${index}]`, new Set(["instanceId", "extensionId", "configSchemaVersion", "config"]));
+        if (!ID.test(instance.instanceId ?? "") || !ID.test(instance.extensionId ?? "")) throw new Error(`extensions[${index}] identity is invalid`);
+        if (instanceIds.has(instance.instanceId)) throw new Error(`Duplicate extension instance: ${instance.instanceId}`);
+        instanceIds.add(instance.instanceId);
+        const manifest = registry[instance.extensionId];
+        if (!manifest) throw new Error(`Extension is not installed: ${instance.extensionId}`);
+        if (manifest.status === "diagnostic") throw new Error(`Extension is diagnostic-only: ${instance.extensionId}`);
+        if (instance.configSchemaVersion !== manifest.configSchemaVersion) throw new Error(`Extension config schema is unsupported: ${instance.instanceId}`);
+        validateSchema(instance.config, manifest.configSchemaObject, `extensions[${index}].config`);
+        if (manifest.type === "stack") {
+            stackCount += 1;
+            const requiredToolchainRoles = manifest.processors.flatMap((processor) =>
+                processor.secretRoles.filter(({ required }) => required).map(({ role }) => role));
+            for (const unit of instance.config.buildUnits) {
+                if (buildUnitIds.has(unit.id)) throw new Error(`Build unit has multiple owners: ${unit.id}`);
+                buildUnitIds.add(unit.id);
+                if (unit.runner === "self-hosted" && !unit.selfHostedReason) {
+                    throw new Error(`Self-hosted build unit requires a reason: ${unit.id}`);
+                }
+                if (unit.runner !== "self-hosted" && unit.selfHostedReason !== undefined) {
+                    throw new Error(`Hosted build unit cannot declare selfHostedReason: ${unit.id}`);
+                }
+                const expectedRunner = manifest.targets[unit.target];
+                if (Object.keys(manifest.targets).length && unit.runner !== "self-hosted" && !expectedRunner) {
+                    throw new Error(`Stack ${instance.instanceId} does not support hosted target ${unit.target}`);
+                }
+                if (expectedRunner && unit.runner !== "self-hosted" && unit.runner !== expectedRunner) {
+                    throw new Error(`Stack ${instance.instanceId} target ${unit.target} requires runner ${expectedRunner}`);
+                }
+                if (manifest.status === "credential-gated") {
+                    for (const role of requiredToolchainRoles) {
+                        if (!unit.requiredSecretRoles.includes(role) || !instance.config.secretNames?.[role]) {
+                            throw new Error(`Credential-gated stack ${instance.instanceId} requires Secret role ${role}`);
+                        }
+                    }
+                }
             }
-            optionalString(debugArtifact.unit, `providers.sentry.debugArtifacts[${index}].unit`, ID_PATTERN);
         }
-    }
-}
-
-export function validateConfig(config) {
-    object(config, "config");
-    exactKeys(config, "config", new Set(["schemaVersion", "project", "build", "versioning", "hosting", "release", "providers"]));
-    noCredentialValues(config);
-    if (config.schemaVersion !== CONFIG_SCHEMA) throw new Error(`schemaVersion must be ${CONFIG_SCHEMA}`);
-    object(config.project, "project");
-    exactKeys(config.project, "project", new Set(["name", "adapter", "adapterOptions"]));
-    string(config.project.name, "project.name");
-    string(config.project.adapter, "project.adapter", ID_PATTERN);
-    const adapter = adapterById(config.project.adapter);
-    if (!adapter) throw new Error("project.adapter is not installed");
-    if (adapter.status === "unsupported") throw new Error(`project.adapter ${adapter.id} is detected but unsupported`);
-    if (adapter.id === "godot") {
-        object(config.project.adapterOptions, "project.adapterOptions");
-        string(config.project.adapterOptions.godotVersion, "project.adapterOptions.godotVersion", /^\d+\.\d+(?:\.\d+)?(?:-[A-Za-z0-9.-]+)?$/u);
-    }
-    if (adapter.id === "unity") {
-        object(config.project.adapterOptions, "project.adapterOptions");
-        if (!["personal", "professional"].includes(config.project.adapterOptions.license)) {
-            throw new Error("project.adapterOptions.license must be personal or professional");
-        }
-        if (config.project.adapterOptions.projectPath !== ".") {
-            assertRelativeRepositoryPath(config.project.adapterOptions.projectPath, "project.adapterOptions.projectPath");
-        }
-    }
-
-    object(config.build, "build");
-    exactKeys(config.build, "build", new Set(["units"]));
-    if (!Array.isArray(config.build.units) || !config.build.units.length) throw new Error("build.units must not be empty");
-    config.build.units.forEach((unit, index) => buildUnit(unit, index, adapter));
-    if (new Set(config.build.units.map(({ id }) => id)).size !== config.build.units.length) throw new Error("build unit ids must be unique");
-
-    object(config.versioning, "versioning");
-    exactKeys(config.versioning, "versioning", new Set(["canonical", "buildNumbers", "changelogPattern", "requiresChinese"]));
-    versionSource(config.versioning.canonical, "versioning.canonical");
-    if (!Array.isArray(config.versioning.buildNumbers ?? [])) throw new Error("versioning.buildNumbers must be an array");
-    (config.versioning.buildNumbers ?? []).forEach((entry, index) => {
-        object(entry, `versioning.buildNumbers[${index}]`);
-        exactKeys(entry, `versioning.buildNumbers[${index}]`, new Set(["id", "source"]));
-        string(entry.id, `versioning.buildNumbers[${index}].id`, ID_PATTERN);
-        versionSource(entry.source, `versioning.buildNumbers[${index}].source`);
-    });
-    assertRelativeRepositoryPath(config.versioning.changelogPattern.replaceAll("{version}", "0.0.0"), "versioning.changelogPattern");
-    if (typeof config.versioning.requiresChinese !== "boolean") throw new Error("versioning.requiresChinese must be boolean");
-
-    object(config.hosting, "hosting");
-    exactKeys(config.hosting, "hosting", new Set(["github"]));
-    object(config.hosting.github, "hosting.github");
-    exactKeys(config.hosting.github, "hosting.github", new Set(["enabled", "source", "distribution", "releaseMode"]));
-    const github = config.hosting.github;
-    if (typeof github.enabled !== "boolean") throw new Error("hosting.github.enabled must be boolean");
-    if (github.enabled) {
-        repositoryIdentity(github.source, "hosting.github.source");
-        if (github.source.visibility === "public") {
-            if (github.releaseMode !== "same-repository" || github.distribution !== null) {
-                throw new Error("public sources must use same-repository with no separate distribution identity");
+        if (manifest.type === "release") {
+            releaseCount += 1;
+            const release = instance.config;
+            if (release.mode === "local" && (release.source !== undefined || release.distribution !== undefined)) {
+                throw new Error("Local release cannot configure GitHub repositories");
             }
-        } else {
-            if (github.releaseMode !== "dual-repository") throw new Error("private sources must use dual-repository");
-            repositoryIdentity(github.distribution, "hosting.github.distribution", "public");
-            if (github.distribution.repository === github.source.repository) throw new Error("distribution repository must differ from private source");
-        }
-    } else if (github.releaseMode !== "local" || github.source !== null || github.distribution !== null) {
-        throw new Error("GitHub-disabled projects must use local mode without repository identities");
-    }
-
-    object(config.release, "release");
-    exactKeys(config.release, "release", new Set([
-        "workflowFile", "tagTemplate", "titleTemplate", "manifestSchema", "publicReadmeSource", "publicReadmeTarget",
-        "latestManifest", "latestCompatibility", "latestBuildNumberId", "minimumSupportedVersionCode", "localOutputDirectory",
-    ]));
-    assertRelativeRepositoryPath(config.release.workflowFile, "release.workflowFile");
-    string(config.release.tagTemplate, "release.tagTemplate");
-    string(config.release.titleTemplate, "release.titleTemplate");
-    if (config.release.manifestSchema !== RELEASE_SCHEMA) throw new Error(`release.manifestSchema must be ${RELEASE_SCHEMA}`);
-    optionalString(config.release.publicReadmeSource, "release.publicReadmeSource");
-    if (config.release.publicReadmeSource) assertRelativeRepositoryPath(config.release.publicReadmeSource, "release.publicReadmeSource");
-    optionalString(config.release.publicReadmeTarget, "release.publicReadmeTarget");
-    if (config.release.publicReadmeTarget) assertRelativeRepositoryPath(config.release.publicReadmeTarget, "release.publicReadmeTarget");
-    if (github.enabled && github.releaseMode === "same-repository" && config.release.publicReadmeTarget === "README.md") {
-        throw new Error("same-repository publication must preserve the root README");
-    }
-    if (github.enabled && github.releaseMode === "dual-repository" && config.release.publicReadmeTarget !== "README.md") {
-        throw new Error("dual-repository publication must manage the distribution root README");
-    }
-    assertRelativeRepositoryPath(config.release.latestManifest, "release.latestManifest");
-    assertRelativeRepositoryPath(config.release.localOutputDirectory, "release.localOutputDirectory");
-    if (!["release-ops", "android-version-code-v1"].includes(config.release.latestCompatibility)) {
-        throw new Error("release.latestCompatibility is unsupported");
-    }
-    if (config.release.latestCompatibility === "android-version-code-v1") {
-        string(config.release.latestBuildNumberId, "release.latestBuildNumberId", ID_PATTERN);
-        if (!config.versioning.buildNumbers.some(({ id }) => id === config.release.latestBuildNumberId)) {
-            throw new Error("release.latestBuildNumberId must reference a configured build number");
-        }
-        if (!Number.isSafeInteger(config.release.minimumSupportedVersionCode)
-            || config.release.minimumSupportedVersionCode <= 0) {
-            throw new Error("release.minimumSupportedVersionCode must be a positive integer");
+            if (release.mode === "local" && release.manifest.compatibility !== "release-ops") {
+                throw new Error("Local release supports only the standard release manifest");
+            }
+            if (release.mode === "same-repository" && (release.source?.visibility !== "public" || release.distribution !== null)) {
+                throw new Error("same-repository requires a public source and no distribution repository");
+            }
+            if (release.mode === "dual-repository") {
+                if (release.source?.visibility !== "private" || release.distribution?.visibility !== "public") {
+                    throw new Error("dual-repository requires private source and public distribution identities");
+                }
+                if (release.source.repository === release.distribution.repository) throw new Error("Distribution repository must differ from source");
+            }
+            if (release.manifest.compatibility === "android-version-code-v1"
+                && (!release.manifest.latestBuildNumberId || !Number.isSafeInteger(release.manifest.minimumSupportedBuildNumber))) {
+                throw new Error("Android latest compatibility requires a build number id and minimum build number");
+            }
         }
     }
-
-    object(config.providers, "providers");
-    for (const [id, provider] of Object.entries(config.providers)) validateProviderConfig(id, provider, github.enabled);
-    return config;
+    if (!stackCount) throw new Error("At least one stack extension is required");
+    if (releaseCount !== 1) throw new Error("Exactly one release extension is required");
+    for (const instance of input.extensions) {
+        const manifest = registry[instance.extensionId];
+        if (manifest.type === "signing") {
+            for (const unitId of instance.config.buildUnitIds) {
+                if (!buildUnitIds.has(unitId)) throw new Error(`Signing instance references an unknown build unit: ${unitId}`);
+            }
+            const declared = new Set(manifest.processors.flatMap((processor) => processor.secretRoles.map(({ role }) => role)));
+            for (const role of Object.keys(instance.config.secretNames)) {
+                if (!declared.has(role)) throw new Error(`Signing instance maps an undeclared Secret role: ${role}`);
+            }
+        }
+        if (manifest.type === "provider" && instance.config.issueSync === true) {
+            const release = input.extensions.find((candidate) => registry[candidate.extensionId].type === "release");
+            if (release.config.mode === "local") throw new Error("Provider issue sync requires a GitHub release extension");
+            if (release.config.source.visibility !== "private") throw new Error("Provider issue sync requires a private source repository");
+        }
+    }
+    rejectCredentialValues(input);
+    return input;
 }
 
-export async function loadConfig(root = process.cwd()) {
-    const path = resolve(root, ".release-ops", "config.json");
-    const text = await readFile(path, "utf8");
-    return validateConfig(JSON.parse(text));
+export async function loadConfig(root = process.cwd(), options = {}) {
+    const input = JSON.parse(await readFile(resolve(root, ".release-ops", "config.json"), "utf8"));
+    return validateConfig(input, options);
+}
+
+export function configDigest(config) {
+    return sha256(stableJson(config));
+}
+
+export function extensionInstances(config, registry, type = null) {
+    return config.extensions.filter((instance) => !type || registry[instance.extensionId]?.type === type);
+}
+
+export function instanceById(config, instanceId) {
+    return config.extensions.find((instance) => instance.instanceId === instanceId) ?? null;
 }

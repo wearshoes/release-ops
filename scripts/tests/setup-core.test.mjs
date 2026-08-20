@@ -1,252 +1,136 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import { validateConfig } from "../config.mjs";
-import { publishRelease } from "../release-publisher.mjs";
-import { applySetupPlan, auditProject, createSetupPlan, inspectProject } from "../setup-core.mjs";
-import { installProjectFiles } from "../project-installer.mjs";
-import { baseConfig, BUILD_NUMBERS, fixtureRoot, SOURCE_SHA } from "./fixtures.mjs";
+import { applySetupPlan, auditProject, createSetupPlan, inspectProject, routeSetup } from "../setup-core.mjs";
+import { answersFor, baseConfig, fixtureRoot } from "./fixtures.mjs";
 
-function localAnswers(providerSelection = []) {
-    const config = baseConfig({ github: false });
-    return {
-        schemaVersion: "release-ops/setup-answers/v2",
-        project: config.project,
-        build: config.build,
-        versioning: config.versioning,
-        github: { enabled: false },
-        release: config.release,
-        providerSelection,
-        providers: providerSelection.includes("sentry") ? {
-            sentry: { organization: "owner", project: "example", apiBase: "https://owner.sentry.io/api/0" },
-        } : {},
-    };
+function decisions() {
+    return [
+        { instanceId: "release", role: "source", action: "existing", repository: "private-owner/private-source" },
+        { instanceId: "release", role: "distribution", action: "existing", repository: "public-owner/example-releases" },
+    ];
 }
 
-function githubAnswers(source, distribution = null) {
-    const answers = localAnswers();
-    answers.github = { enabled: true, source, ...(distribution ? { distribution } : {}) };
-    return answers;
-}
-
-test("inspect reports version, signing, workflow, and provider decisions without enabling a provider", async () => {
-    const root = await fixtureRoot("release-ops-inspect-facts-");
-    await mkdir(join(root, ".github", "workflows"), { recursive: true });
-    await writeFile(join(root, ".github", "workflows", "existing.yml"), "name: Existing\n", "utf8");
-    await writeFile(join(root, "keystore.properties"), "not-read-by-inspect\n", "utf8");
-    const inspection = await inspectProject(root);
-    assert.equal(inspection.versionSources.some(({ kind, file, key }) => kind === "canonical" && file === "version.properties" && key === "VERSION"), true);
-    assert.equal(inspection.versionSources.some(({ kind, key }) => kind === "build-number" && key === "CODE"), true);
-    assert.deepEqual(inspection.signingIndicators, ["keystore.properties"]);
-    assert.deepEqual(inspection.workflows, [".github/workflows/existing.yml"]);
-    assert.deepEqual(inspection.decisionCheckpoint, {
-        mode: "initialize",
-        status: "awaiting-user",
-        required: true,
-        requiredBefore: ["setup-plan"],
-        decisions: ["github", "providerSelection"],
-        existingStatePolicy: "evidence-only",
-        inferenceAllowed: false,
-    });
-    assert.deepEqual(inspection.decisions.providerSelection, {
-        required: true,
-        status: "unresolved",
-        source: "current-user",
-        choices: ["none", "sentry"],
-        inferenceAllowed: false,
-    });
-    assert.equal(Object.hasOwn(inspection, "selectedProviders"), false);
-});
-
-test("v1 provider state cannot satisfy the current-user reinitialization checkpoint", async () => {
-    const root = await fixtureRoot("release-ops-v1-provider-gate-");
-    await mkdir(join(root, ".release-ops"));
-    await writeFile(join(root, ".release-ops", "config.json"), JSON.stringify({
-        schemaVersion: "release-ops/config/v1",
-        providers: { sentry: { enabled: false } },
-    }), "utf8");
-    const inspection = await inspectProject(root);
-    assert.deepEqual(inspection.config, {
-        status: "incompatible",
-        schemaVersion: "release-ops/config/v1",
-        action: "reinitialize",
-    });
-    assert.equal(inspection.decisionCheckpoint.mode, "reinitialize");
-    assert.equal(inspection.decisionCheckpoint.status, "awaiting-user");
-    assert.equal(inspection.decisionCheckpoint.existingStatePolicy, "evidence-only");
-    assert.equal(inspection.decisions.providerSelection.status, "unresolved");
-    assert.equal(inspection.decisions.providerSelection.source, "current-user");
-    assert.equal(Object.hasOwn(inspection, "selectedProviders"), false);
-});
-
-test("a valid v2 config remains directly auditable without a reinitialization checkpoint", async () => {
-    const root = await fixtureRoot("release-ops-config-audit-gate-");
-    await installProjectFiles(root, baseConfig({ github: false }), { includeConfig: true });
-    const inspection = await inspectProject(root);
-    assert.deepEqual(inspection.decisionCheckpoint, {
-        mode: "configured",
-        status: "not-required-for-audit",
-        required: false,
-        requiredBefore: [],
-        decisions: [],
-        existingStatePolicy: "evidence-only",
-        inferenceAllowed: false,
-    });
-});
-
-test("v1 projects require a confirmed digest before transactional reinitialization", async () => {
-    const root = await fixtureRoot("release-ops-reinit-");
-    await mkdir(join(root, ".release-ops"));
-    await writeFile(join(root, ".release-ops", "config.json"), '{"schemaVersion":"release-ops/config/v1"}\n', "utf8");
-    const plan = await createSetupPlan(root, localAnswers());
-    assert.equal(plan.inspection.config.status, "incompatible");
-    assert.equal(plan.managedFiles.operations.find(({ path }) => path === ".release-ops/config.json").operation, "update");
-    await assert.rejects(applySetupPlan(plan, "0".repeat(64)), /exactly match/u);
-    assert.match(await readFile(join(root, ".release-ops", "config.json"), "utf8"), /config\/v1/u);
-    await applySetupPlan(plan, plan.planDigest);
-    assert.equal(JSON.parse(await readFile(join(root, ".release-ops", "config.json"), "utf8")).schemaVersion, "release-ops/config/v2");
-    assert.equal(JSON.parse(await readFile(join(root, ".release-ops", "managed-files.json"), "utf8")).schemaVersion, "release-ops-managed-files/v2");
-    const audit = await auditProject(root, { token: null });
-    assert.equal(audit.success, true);
-    assert.equal(audit.checks.releasePublication.entrypoint, "loadable");
-});
-
-test("a None-provider installation runs the managed local release entrypoint without provider runtime", async () => {
-    const root = await fixtureRoot("release-ops-none-local-release-");
-    const plan = await createSetupPlan(root, localAnswers(["none"]));
-    await applySetupPlan(plan, plan.planDigest);
-    await assert.rejects(access(join(root, ".release-ops", "runtime", "sentry-build-hook.mjs")), /ENOENT/u);
-    execFileSync("git", ["-C", root, "init", "-b", "main"], { stdio: "ignore" });
-    execFileSync("git", ["-C", root, "config", "user.name", "Release Ops Test"]);
-    execFileSync("git", ["-C", root, "config", "user.email", "release-ops@example.invalid"]);
-    execFileSync("git", ["-C", root, "add", "."]);
-    execFileSync("git", ["-C", root, "commit", "-m", "fixture"], { stdio: "ignore" });
-    const output = execFileSync(process.execPath, [
-        join(root, ".release-ops", "runtime", "local-release.mjs"), "--root", root, "--version", "1.2.3",
-    ], { encoding: "utf8" });
-    const result = JSON.parse(output);
-    assert.equal(result.mode, "local");
-    assert.equal(result.version, "1.2.3");
-    const manifest = JSON.parse(await readFile(join(result.outputRoot, "release-manifest.json"), "utf8"));
-    assert.equal(manifest.schemaVersion, "release-ops-release/v2");
-});
-
-test("one Sentry selection enables build hooks but not GitHub incident workflows when GitHub is disabled", async () => {
-    const root = await fixtureRoot("release-ops-provider-choice-");
-    const plan = await createSetupPlan(root, localAnswers(["sentry"]));
-    assert.equal(plan.config.providers.sentry.enabled, true);
-    assert.equal(plan.config.providers.sentry.issueSync, false);
-    assert.equal(plan.requiredSecrets.some(({ name }) => name === "SENTRY_ORG_CI_TOKEN"), true);
-    assert.equal(plan.managedFiles.operations.some(({ path }) => path.includes("sentry-issues.yml")), false);
-    await applySetupPlan(plan, plan.planDigest);
-    const audit = await auditProject(root, { token: null, env: { SENTRY_ORG_CI_TOKEN: "present" } });
-    assert.equal(audit.success, true);
-    assert.equal(audit.checks.providers.sentry.status, "pass");
-});
-
-test("None cannot be combined with an installed provider", async () => {
-    const root = await fixtureRoot("release-ops-provider-none-conflict-");
-    await assert.rejects(createSetupPlan(root, localAnswers(["none", "sentry"])), /cannot be combined/u);
-});
-
-test("existing GitHub source and distribution identities use independently discovered default branches", async () => {
-    const root = await fixtureRoot("release-ops-hosting-");
+function fakeGitHub({ secrets = [] } = {}) {
     const repositories = {
-        "owner/source": { full_name: "owner/source", visibility: "private", private: true, default_branch: "trunk", archived: false, disabled: false },
-        "owner/releases": { full_name: "owner/releases", visibility: "public", private: false, default_branch: "stable", archived: false, disabled: false },
+        "private-owner/private-source": {
+            full_name: "private-owner/private-source", visibility: "private", default_branch: "main", archived: false, disabled: false,
+        },
+        "public-owner/example-releases": {
+            full_name: "public-owner/example-releases", visibility: "public", default_branch: "main", archived: false, disabled: false,
+        },
     };
-    const github = { request: async (path) => ({ data: repositories[path.replace("/repos/", "")] }) };
-    const plan = await createSetupPlan(root, githubAnswers(
-        { action: "existing", repository: "owner/source" },
-        { action: "existing", repository: "owner/releases" },
-    ), { token: "metadata-only", github });
-    assert.equal(plan.config.hosting.github.releaseMode, "dual-repository");
-    assert.equal(plan.config.hosting.github.source.owner, "owner");
-    assert.equal(plan.config.hosting.github.source.name, "source");
-    assert.equal(plan.config.hosting.github.source.defaultBranch, "trunk");
-    assert.equal(plan.config.hosting.github.distribution.defaultBranch, "stable");
-});
-
-test("Unity credential profiles are part of the confirmed Secret plan", async () => {
-    const root = await fixtureRoot("release-ops-unity-secrets-");
-    const answers = localAnswers();
-    answers.project = { name: "Unity Game", adapter: "unity", adapterOptions: { license: "professional", projectPath: "." } };
-    delete answers.build.units[0].command;
-    const plan = await createSetupPlan(root, answers);
-    const names = plan.requiredSecrets.map(({ name }) => name);
-    assert.deepEqual(names, ["UNITY_EMAIL", "UNITY_PASSWORD", "UNITY_SERIAL"]);
-    assert.equal(plan.requiredSecrets.every(({ purpose }) => purpose === "build-and-sign"), true);
-});
-
-test("public GitHub sources publish in place without a distribution repository", async () => {
-    const root = await fixtureRoot("release-ops-public-");
-    const github = { request: async () => ({ data: {
-        full_name: "owner/public", visibility: "public", private: false, default_branch: "main", archived: false, disabled: false,
-    } }) };
-    const plan = await createSetupPlan(root, githubAnswers({ action: "existing", repository: "owner/public" }), {
-        token: "metadata-only", github,
-    });
-    assert.equal(plan.config.hosting.github.releaseMode, "same-repository");
-    assert.equal(plan.config.hosting.github.distribution, null);
-});
-
-test("new GitHub repositories require explicit visibility and verify the owner", async () => {
-    const root = await fixtureRoot("release-ops-create-hosting-");
-    const calls = [];
-    const github = { request: async (path) => {
-        calls.push(path);
-        if (path === "/repos/owner/new-project") return { data: null };
-        if (path === "/user") return { data: { login: "owner" } };
-        throw new Error(`unexpected ${path}`);
+    return { request: async (path) => {
+        if (path.includes("/actions/secrets")) return { data: { secrets: secrets.map((name) => ({ name, updated_at: "2026-01-01" })) } };
+        return { data: repositories[path.replace("/repos/", "")] };
     } };
-    const plan = await createSetupPlan(root, githubAnswers({
-        action: "create", repository: "owner/new-project", visibility: "public", defaultBranch: "main",
-    }), { token: "metadata-only", github });
-    assert.equal(plan.repositories[0].action, "create");
-    assert.equal(plan.config.hosting.github.source.visibility, "public");
-    assert.deepEqual(calls, ["/repos/owner/new-project", "/user"]);
+}
+
+test("inspect routes missing, valid v1, invalid, and legacy v2 configs", async () => {
+    const missingRoot = await fixtureRoot("release-ops-route-missing-");
+    const missing = await inspectProject(missingRoot);
+    assert.deepEqual(missing.config, { status: "missing", action: "initialize" });
+    assert.deepEqual(missing.route.allowed, ["initialize"]);
+
+    const validRoot = await fixtureRoot("release-ops-route-valid-");
+    const plan = await createSetupPlan(validRoot, answersFor(baseConfig()), { token: null });
+    await applySetupPlan(plan, plan.planDigest, { token: null });
+    const valid = await inspectProject(validRoot);
+    assert.equal(valid.config.status, "valid");
+    assert.equal(valid.route.defaultCommand, "audit");
+
+    const invalidRoot = await fixtureRoot("release-ops-route-invalid-");
+    await mkdir(join(invalidRoot, ".release-ops"));
+    await writeFile(join(invalidRoot, ".release-ops", "config.json"), "{broken", "utf8");
+    assert.equal((await inspectProject(invalidRoot)).config.action, "reinitialize");
+
+    const legacyRoot = await fixtureRoot("release-ops-route-v2-");
+    await mkdir(join(legacyRoot, ".release-ops"));
+    await writeFile(join(legacyRoot, ".release-ops", "config.json"), '{"schemaVersion":"release-ops/config/v2"}\n', "utf8");
+    const legacy = await inspectProject(legacyRoot);
+    assert.deepEqual(legacy.config, {
+        status: "incompatible", schemaVersion: "release-ops/config/v2", action: "reinitialize",
+    });
 });
 
-test("audit cannot succeed when configured GitHub remotes were not verified", async () => {
+test("reconfigure inherits valid v1 defaults while reinitialize inherits nothing", async () => {
+    const root = await fixtureRoot("release-ops-read-only-routes-");
+    const plan = await createSetupPlan(root, answersFor(baseConfig()), { token: null });
+    await applySetupPlan(plan, plan.planDigest, { token: null });
+    const reconfigure = await routeSetup(root, "reconfigure");
+    assert.equal(reconfigure.readOnly, true);
+    assert.equal(reconfigure.defaults.project.name, "Example");
+    assert.deepEqual(reconfigure.questionOrder, ["stack", "build-unit", "signing", "release", "github-topology", "provider"]);
+    assert.deepEqual(reconfigure.selectedExtensions.map(({ extension }) => extension.id), ["generic", "local"]);
+    const reinitialize = await routeSetup(root, "reinitialize", { extensionIds: ["android", "github", "sentry"] });
+    assert.equal(reinitialize.defaults, null);
+    assert.equal(reinitialize.inheritance, "none");
+    assert.deepEqual(reinitialize.selectedExtensions.map(({ extension }) => extension.id), ["android", "github", "sentry"]);
+});
+
+test("plan digest is deterministic and apply requires the exact digest", async () => {
+    const root = await fixtureRoot("release-ops-digest-");
+    const answers = answersFor(baseConfig());
+    const first = await createSetupPlan(root, answers, { token: null });
+    const second = await createSetupPlan(root, structuredClone(answers), { token: null });
+    assert.equal(first.planDigest, second.planDigest);
+    await assert.rejects(applySetupPlan(first, "0".repeat(64), { token: null }), /exactly match/u);
+    await applySetupPlan(first, first.planDigest, { token: null });
+    assert.equal(JSON.parse(await readFile(join(root, ".release-ops", "config.json"), "utf8")).schemaVersion, "release-ops/config/v1");
+});
+
+test("GitHub and Sentry plan freezes repository identities and Secret roles", async () => {
+    const root = await fixtureRoot("release-ops-remote-plan-");
+    const config = baseConfig({ mode: "dual-repository", sentry: true, signing: true });
+    const plan = await createSetupPlan(root, answersFor(config, "initialize", decisions()), {
+        token: "metadata", github: fakeGitHub(),
+    });
+    assert.deepEqual(plan.repositories.map(({ role, identity }) => [role, identity.visibility, identity.defaultBranch]), [
+        ["source", "private", "main"], ["distribution", "public", "main"],
+    ]);
+    const roles = plan.requiredSecrets.map(({ instanceId, role }) => `${instanceId}:${role}`);
+    assert.equal(roles.includes("application-signing:credential"), true);
+    assert.equal(roles.includes("release:distribution-release"), true);
+    assert.equal(roles.includes("sentry:project-provision"), true);
+    assert.equal(roles.includes("sentry:build-upload"), true);
+    assert.equal(roles.includes("sentry:incident-read"), true);
+    assert.equal(roles.includes("sentry:incident-write"), true);
+});
+
+test("audit reports config, graph, and workflow drift after manual config edits", async () => {
+    const root = await fixtureRoot("release-ops-audit-drift-");
+    const github = fakeGitHub();
+    const plan = await createSetupPlan(root, answersFor(baseConfig({ mode: "dual-repository" }), "initialize", decisions()), {
+        token: "metadata", github,
+    });
+    await applySetupPlan(plan, plan.planDigest, { token: "metadata", github });
+    const path = join(root, ".release-ops", "config.json");
+    const config = JSON.parse(await readFile(path, "utf8"));
+    config.extensions.find(({ instanceId }) => instanceId === "release").config.workflowFile = ".github/workflows/other-release.yml";
+    await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    const audit = await auditProject(root, { token: null, env: {} });
+    assert.equal(audit.success, false);
+    assert.equal(audit.checks.configuration.status, "pass");
+    assert.equal(audit.checks.graph.status, "fail");
+    assert.equal(audit.checks.workflows.status, "fail");
+    assert.match(audit.checks.graph.message, /re-plan\/apply/u);
+});
+
+test("audit verifies configured remotes and Secret metadata without reading values", async () => {
     const root = await fixtureRoot("release-ops-audit-remote-");
-    await installProjectFiles(root, baseConfig(), { includeConfig: true });
-    const result = await auditProject(root, { token: null });
-    assert.equal(result.remoteVerified, false);
-    assert.equal(result.success, false);
-    assert.equal(result.checks.githubHosting.status, "fail");
-    assert.equal(result.checks.localBuild.status, "configured");
-});
-
-test("local audit reports build credentials independently", async () => {
-    const root = await fixtureRoot("release-ops-audit-local-");
-    const config = structuredClone(baseConfig({ github: false }));
-    config.build.units[0].requiredSecretNames = ["SIGNING_KEY"];
-    await installProjectFiles(root, validateConfig(config), { includeConfig: true });
-    const missing = await auditProject(root, { token: null, env: {} });
-    assert.equal(missing.success, false);
-    assert.deepEqual(missing.checks.localBuild, { status: "fail", missingEnvironmentNames: ["SIGNING_KEY"] });
-    const ready = await auditProject(root, { token: null, env: { SIGNING_KEY: "present" } });
-    assert.equal(ready.success, true);
-    assert.equal(ready.checks.localBuild.status, "configured");
-});
-
-test("artifact paths cannot escape through a repository symlink", async (context) => {
-    const root = await fixtureRoot("release-ops-symlink-");
-    const outside = await mkdtemp(join(tmpdir(), "release-ops-outside-"));
-    await writeFile(join(outside, "secret.bin"), "secret", "utf8");
-    try {
-        await symlink(outside, join(root, "linked"), "junction");
-    } catch (error) {
-        context.skip(`junction creation unavailable: ${error.code}`);
-        return;
-    }
-    const config = structuredClone(baseConfig({ github: false }));
-    config.build.units[0].artifacts[0].path = "linked/secret.bin";
-    await assert.rejects(publishRelease({
-        config, root, version: "1.2.3", buildNumbers: BUILD_NUMBERS, sourceSha: SOURCE_SHA,
-    }), /escapes the repository/u);
+    const config = baseConfig({ mode: "dual-repository" });
+    const plan = await createSetupPlan(root, answersFor(config, "initialize", decisions()), {
+        token: "metadata", github: fakeGitHub(),
+    });
+    await applySetupPlan(plan, plan.planDigest, { token: "metadata", github: fakeGitHub() });
+    const audit = await auditProject(root, {
+        token: "metadata",
+        github: fakeGitHub({ secrets: ["RELEASE_REPO_TOKEN"] }),
+        env: {},
+    });
+    assert.equal(audit.remoteVerified, true);
+    assert.equal(audit.checks.repositories.status, "pass");
+    assert.equal(audit.success, true);
 });

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wearshoes/release-ops/schemas/processor-v1.json",
+  "title": "Release Ops processor declaration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "stage", "module", "entrypoint", "requires", "provides", "before", "after", "secretRoles", "permissions"],
+  "properties": {
+    "schemaVersion": { "const": "release-ops/processor/v1" },
+    "id": { "$ref": "#/$defs/id" },
+    "stage": { "enum": ["inspect", "configure", "plan", "preflight", "prepare", "build", "sign", "debug-artifacts", "collect", "publish-stage", "publish-finalize", "scheduled-ingest", "resolve", "audit"] },
+    "module": { "$ref": "#/$defs/path" },
+    "entrypoint": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}$" },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability", "cardinality", "optional"],
+        "properties": {
+          "capability": { "$ref": "#/$defs/capability" },
+          "cardinality": { "enum": ["one", "many"] },
+          "optional": { "type": "boolean" }
+        }
+      }
+    },
+    "provides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability", "merge"],
+        "properties": {
+          "capability": { "$ref": "#/$defs/capability" },
+          "merge": { "enum": ["exclusive", "append", "keyed"] },
+          "key": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "before": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "after": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "secretRoles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "required"],
+        "properties": {
+          "role": { "$ref": "#/$defs/id" },
+          "required": { "type": "boolean" },
+          "defaultName": { "$ref": "#/$defs/secret" }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands", "networkOrigins"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "executable"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "executable": { "type": "string", "minLength": 1 },
+              "argsPrefix": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "networkOrigins": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(?:https://[^/?#]+|config-origin:[A-Za-z][A-Za-z0-9]*(?:\\.[A-Za-z][A-Za-z0-9]*)*)$"
+          }
+        },
+        "outputRoots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^config:[A-Za-z][A-Za-z0-9]*(?:\\.[A-Za-z][A-Za-z0-9]*)*$" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "capability": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)?$" },
+    "path": { "type": "string", "pattern": "^(?![A-Za-z]:|/|.*(?:^|/)\\.\\.(?:/|$))[^\\u0000]+$" },
+    "secret": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]{0,99}$" }
+  }
+}

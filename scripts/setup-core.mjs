@@ -1,85 +1,169 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { AUDIT_SCHEMA, CONFIG_SCHEMA, PLAN_SCHEMA, RELEASE_SCHEMA, loadConfig, validateConfig } from "./config.mjs";
+import { CONFIG_SCHEMA, configDigest, validateConfig } from "./config.mjs";
+import { loadExtensionCatalog, hydrateExtensions, publicExtension, PLUGIN_ROOT } from "./extension-registry.mjs";
 import { createRepository, ensureDistributionReadme, inspectRepository, listSecretMetadata } from "./github-admin.mjs";
 import { createGitHubClient } from "./github-client.mjs";
-import { resolveRepositoryPath } from "./path-safety.mjs";
-import { BUILD_ADAPTERS, PROVIDERS, adapterById, adapterRequiredSecrets, loadProviderBuildHook, providerChoices } from "./provider-registry.mjs";
-import { installProjectFiles, planProjectFiles } from "./project-installer.mjs";
+import { createKernelApi } from "./kernel-api.mjs";
+import { createProcessorGraph, nodesForEntrypoint } from "./processor-graph.mjs";
+import { installProjectFiles, planProjectFiles, publicManagedPlan } from "./project-installer.mjs";
+import { sha256, stableJson } from "./stable.mjs";
 
-export const ANSWERS_SCHEMA = "release-ops/setup-answers/v2";
-export const INSPECT_SCHEMA = "release-ops/inspect/v2";
+export const ANSWERS_SCHEMA = "release-ops/setup-answers/v1";
+export const PLAN_SCHEMA = "release-ops/setup-plan/v1";
+export const INSPECT_SCHEMA = "release-ops/inspect/v1";
+export const AUDIT_SCHEMA = "release-ops/audit/v1";
 
-function stable(value) {
-    if (Array.isArray(value)) return value.map(stable);
-    if (!value || typeof value !== "object") return value;
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+const LEGACY_CONFIG_SCHEMA = "release-ops/config/v2";
+const ID = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+const HASH = /^[0-9a-f]{64}$/u;
+const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const SETUP_MODES = new Set(["initialize", "reconfigure", "reinitialize"]);
+const QUESTION_PHASES = ["stack", "build-unit", "signing", "release", "github-topology", "provider"];
+
+function freeze(value) {
+    if (Array.isArray(value)) value.forEach(freeze);
+    else if (value && typeof value === "object") Object.values(value).forEach(freeze);
+    return Object.freeze(value);
 }
 
-function planDigest(plan) {
-    const payload = { ...plan };
-    delete payload.planDigest;
-    return createHash("sha256").update(JSON.stringify(stable(payload))).digest("hex");
+function exactKeys(value, name, allowed) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
+    for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`${name}.${key} is not supported`);
 }
 
 function git(root, args) {
     try {
-        return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync("git", ["-C", root, ...args], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+            windowsHide: true,
+        }).trim();
     } catch {
         return null;
     }
 }
 
 async function exists(path) {
-    try { await access(path); return true; } catch { return false; }
+    try {
+        await access(path);
+        return true;
+    } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+    }
 }
 
-async function walk(root, maxDepth = 4, depth = 0) {
+async function walk(root, maxDepth = 5, depth = 0) {
     if (depth > maxDepth) return [];
-    const result = [];
+    const paths = [];
     for (const entry of await readdir(root, { withFileTypes: true })) {
-        if ([".git", ".codegraph", "node_modules", "build", "dist", ".gradle", ".release-ops"].includes(entry.name)) continue;
-        const full = join(root, entry.name);
-        result.push(full);
-        if (entry.isDirectory() && !entry.isSymbolicLink()) result.push(...await walk(full, maxDepth, depth + 1));
+        if ([".git", ".codegraph", ".gradle", ".release-ops", "build", "dist", "node_modules"].includes(entry.name)) continue;
+        const path = join(root, entry.name);
+        paths.push(path);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) paths.push(...await walk(path, maxDepth, depth + 1));
     }
-    return result;
+    return paths;
 }
 
-async function detectedAdapters(root) {
-    const paths = (await walk(root)).map((path) => path.replaceAll("\\", "/"));
-    const names = paths.map((path) => basename(path));
-    let packageText = "";
-    let pubspecText = "";
-    try { packageText = await readFile(join(root, "package.json"), "utf8"); } catch { /* Optional. */ }
-    try { pubspecText = await readFile(join(root, "pubspec.yaml"), "utf8"); } catch { /* Optional. */ }
-    const joined = `${paths.join("\n")}\n${packageText}`.toLowerCase();
-    const detected = [];
-    for (const adapter of BUILD_ADAPTERS.filter(({ id }) => id !== "generic")) {
-        let matched = adapter.detects.some((pattern) => pattern.startsWith("*.")
-            ? names.some((name) => name.endsWith(pattern.slice(1)))
-            : joined.includes(pattern.toLowerCase()));
-        if (adapter.id === "react-native") matched = /["']react-native["']/u.test(packageText);
-        if (adapter.id === "flutter") matched = /sdk:\s*flutter/u.test(pubspecText);
-        if (matched) detected.push({ id: adapter.id, status: adapter.status, docs: adapter.docs, targets: adapter.targets });
-    }
-    return detected;
-}
-
-function repositoryRelative(root, path) {
+function relativePath(root, path) {
     return relative(resolve(root), path).replaceAll("\\", "/");
+}
+
+function lightweightConfigValidation(raw, catalog) {
+    exactKeys(raw, "config", new Set(["schemaVersion", "project", "extensions"]));
+    if (raw.schemaVersion !== CONFIG_SCHEMA) throw new Error(`schemaVersion must be ${CONFIG_SCHEMA}`);
+    exactKeys(raw.project, "project", new Set(["name"]));
+    if (typeof raw.project.name !== "string" || !raw.project.name.trim()) throw new Error("project.name is invalid");
+    if (!Array.isArray(raw.extensions) || raw.extensions.length < 2) throw new Error("extensions must contain a stack and release instance");
+    const instances = new Set();
+    let stacks = 0;
+    let releases = 0;
+    for (const [index, instance] of raw.extensions.entries()) {
+        exactKeys(instance, `extensions[${index}]`, new Set(["instanceId", "extensionId", "configSchemaVersion", "config"]));
+        if (!ID.test(instance.instanceId ?? "") || !ID.test(instance.extensionId ?? "") || instances.has(instance.instanceId)) {
+            throw new Error(`extensions[${index}] identity is invalid or duplicated`);
+        }
+        instances.add(instance.instanceId);
+        const manifest = catalog[instance.extensionId];
+        if (!manifest || manifest.status === "diagnostic" || manifest.configSchemaVersion !== instance.configSchemaVersion) {
+            throw new Error(`extensions[${index}] references an unavailable extension contract`);
+        }
+        if (!instance.config || typeof instance.config !== "object" || Array.isArray(instance.config)) {
+            throw new Error(`extensions[${index}].config must be an object`);
+        }
+        if (manifest.type === "stack") stacks += 1;
+        if (manifest.type === "release") releases += 1;
+    }
+    if (!stacks || releases !== 1) throw new Error("config requires at least one stack and exactly one release extension");
+    return raw;
+}
+
+async function configState(root, catalog) {
+    const path = resolve(root, ".release-ops", "config.json");
+    if (!(await exists(path))) return { status: "missing", action: "initialize" };
+    let raw;
+    try {
+        raw = JSON.parse(await readFile(path, "utf8"));
+    } catch (error) {
+        return { status: "invalid", action: "reinitialize", message: `Config is not valid UTF-8 JSON: ${error.message}` };
+    }
+    if (raw?.schemaVersion === LEGACY_CONFIG_SCHEMA) {
+        return { status: "incompatible", schemaVersion: LEGACY_CONFIG_SCHEMA, action: "reinitialize" };
+    }
+    try {
+        lightweightConfigValidation(raw, catalog);
+        return {
+            status: "valid",
+            schemaVersion: CONFIG_SCHEMA,
+            instanceIds: raw.extensions.map(({ instanceId }) => instanceId),
+            action: "audit",
+        };
+    } catch (error) {
+        return {
+            status: "invalid",
+            schemaVersion: typeof raw?.schemaVersion === "string" ? raw.schemaVersion : null,
+            action: "reinitialize",
+            message: error.message,
+        };
+    }
+}
+
+function setupRouteForState(state) {
+    if (state.status === "missing") return { defaultCommand: "plan", allowed: ["initialize"], requiredMode: "initialize" };
+    if (state.status === "valid") {
+        return { defaultCommand: "audit", allowed: ["audit", "reconfigure", "reinitialize"], requiredMode: null };
+    }
+    return { defaultCommand: "reinitialize", allowed: ["reinitialize"], requiredMode: "reinitialize" };
+}
+
+async function matchesDetection(root, detection, repositoryPaths) {
+    const present = (pattern) => pattern.startsWith("*.")
+        ? repositoryPaths.some((path) => basename(path).endsWith(pattern.slice(1)))
+        : repositoryPaths.includes(pattern.replaceAll("\\", "/"));
+    if ((detection?.all ?? []).some((pattern) => !present(pattern))) return false;
+    if ((detection?.any ?? []).length && !detection.any.some(present)) return false;
+    for (const rule of detection?.content ?? []) {
+        try {
+            const text = await readFile(resolve(root, rule.path), "utf8");
+            if (!new RegExp(rule.pattern, "u").test(text)) return false;
+        } catch (error) {
+            if (error?.code === "ENOENT") return false;
+            throw error;
+        }
+    }
+    return Boolean((detection?.all ?? []).length || (detection?.any ?? []).length || (detection?.content ?? []).length);
 }
 
 async function inspectVersionSources(root) {
     const candidates = [];
-    const add = (kind, file, reader, key, value = null) => candidates.push({ kind, file, reader, key, value });
+    const add = (kind, file, reader, key, value) => candidates.push({ kind, file, reader, key, value });
     for (const [file, reader] of [["gradle.properties", "gradle-properties"], ["version.properties", "properties"]]) {
         try {
-            const text = await readFile(join(root, file), "utf8");
+            const text = await readFile(resolve(root, file), "utf8");
             for (const line of text.split(/\r?\n/u)) {
                 const match = /^\s*([A-Za-z][A-Za-z0-9_.-]*)\s*=\s*(.*?)\s*$/u.exec(line);
                 if (!match) continue;
@@ -91,13 +175,13 @@ async function inspectVersionSources(root) {
         }
     }
     try {
-        const data = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-        if (typeof data.version === "string" && data.version) add("canonical", "package.json", "package-json", "version", data.version);
+        const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
+        if (typeof packageJson.version === "string") add("canonical", "package.json", "package-json", "version", packageJson.version);
     } catch (error) {
         if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     }
     try {
-        const text = await readFile(join(root, "pubspec.yaml"), "utf8");
+        const text = await readFile(resolve(root, "pubspec.yaml"), "utf8");
         const match = /^version:\s*([^+\s]+)(?:\+([^\s]+))?/mu.exec(text);
         if (match) {
             add("canonical", "pubspec.yaml", "pubspec", "version", match[1]);
@@ -106,481 +190,485 @@ async function inspectVersionSources(root) {
     } catch (error) {
         if (error?.code !== "ENOENT") throw error;
     }
-    try {
-        const text = await readFile(join(root, "project.godot"), "utf8");
-        const match = /^config\/version\s*=\s*["']?([^"'\r\n]+)["']?/mu.exec(text);
-        if (match) add("canonical", "project.godot", "godot", "config/version", match[1].trim());
-    } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-    }
-    try {
-        const file = "ProjectSettings/ProjectSettings.asset";
-        const text = await readFile(join(root, file), "utf8");
-        const version = /^\s*bundleVersion:\s*(.+)$/mu.exec(text);
-        const code = /^\s*AndroidBundleVersionCode:\s*(\d+)$/mu.exec(text);
-        if (version) add("canonical", file, "unity", "bundleVersion", version[1].trim());
-        if (code) add("build-number", file, "unity", "AndroidBundleVersionCode", code[1]);
-    } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-    }
     return candidates;
 }
 
-function inspectRepositoryFiles(root, paths) {
-    const workflowPattern = /\/\.github\/workflows\/[^/]+\.(?:yml|yaml)$/iu;
+export async function inspectProject(root) {
+    const absoluteRoot = resolve(root);
+    const catalog = await loadExtensionCatalog();
+    const paths = await walk(absoluteRoot);
+    const repositoryPaths = paths.map((path) => relativePath(absoluteRoot, path));
+    const stackCandidates = [];
+    for (const manifest of Object.values(catalog).filter(({ type }) => type === "stack")) {
+        if (await matchesDetection(absoluteRoot, manifest.detection, repositoryPaths)) {
+            stackCandidates.push({ extensionId: manifest.id, status: manifest.status, docs: manifest.docs });
+        }
+    }
+    stackCandidates.sort((left, right) => left.extensionId.localeCompare(right.extensionId));
+    const config = await configState(absoluteRoot, catalog);
     const signingPattern = /(?:^|\/)(?:keystore\.properties|exportoptions\.plist|[^/]+\.(?:jks|keystore|p12|mobileprovision))$/iu;
     return {
-        workflows: paths.filter((path) => workflowPattern.test(path.replaceAll("\\", "/"))).map((path) => repositoryRelative(root, path)).sort(),
-        signingIndicators: paths.filter((path) => signingPattern.test(path.replaceAll("\\", "/"))).map((path) => repositoryRelative(root, path)).sort(),
-    };
-}
-
-async function configState(root) {
-    const path = join(root, ".release-ops", "config.json");
-    if (!(await exists(path))) return { status: "missing" };
-    try {
-        const raw = JSON.parse(await readFile(path, "utf8"));
-        if (raw.schemaVersion === "release-ops/config/v1") {
-            return { status: "incompatible", schemaVersion: raw.schemaVersion, action: "reinitialize" };
-        }
-        return { status: "valid", schemaVersion: validateConfig(raw).schemaVersion };
-    } catch (error) {
-        return { status: "invalid", error: error.message };
-    }
-}
-
-function setupDecisionCheckpoint(config) {
-    const requiresInitialization = config.status !== "valid";
-    const mode = config.status === "missing" ? "initialize" : requiresInitialization ? "reinitialize" : "configured";
-    return {
-        mode,
-        status: requiresInitialization ? "awaiting-user" : "not-required-for-audit",
-        required: requiresInitialization,
-        requiredBefore: requiresInitialization ? ["setup-plan"] : [],
-        decisions: requiresInitialization ? ["github", "providerSelection"] : [],
-        existingStatePolicy: "evidence-only",
-        inferenceAllowed: false,
-    };
-}
-
-export async function inspectProject(root) {
-    const paths = await walk(root);
-    const adapters = await detectedAdapters(root);
-    const unsupported = adapters.filter(({ status }) => status === "unsupported").map(({ id }) => id);
-    const repositoryFiles = inspectRepositoryFiles(root, paths);
-    const config = await configState(root);
-    return {
         schemaVersion: INSPECT_SCHEMA,
-        root: resolve(root),
-        projectName: basename(resolve(root)),
-        adapters,
-        diagnostics: unsupported.map((id) => ({ code: "ADAPTER_UNSUPPORTED", adapter: id })),
-        git: {
-            remote: git(root, ["config", "--get", "remote.origin.url"]),
-            branch: git(root, ["branch", "--show-current"]),
-            head: git(root, ["rev-parse", "HEAD"]),
-        },
-        versionSources: await inspectVersionSources(root),
-        signingIndicators: repositoryFiles.signingIndicators,
-        workflows: repositoryFiles.workflows,
+        root: absoluteRoot,
+        projectName: basename(absoluteRoot),
         config,
-        decisionCheckpoint: setupDecisionCheckpoint(config),
-        decisions: {
-            github: { required: true, status: "unresolved", source: "current-user" },
-            providerSelection: {
-                required: true,
-                status: "unresolved",
-                source: "current-user",
-                choices: providerChoices(),
-                inferenceAllowed: false,
-            },
+        route: setupRouteForState(config),
+        stackCandidates,
+        signingIndicators: repositoryPaths.filter((path) => signingPattern.test(path)).sort(),
+        versionSources: await inspectVersionSources(absoluteRoot),
+        git: {
+            remote: git(absoluteRoot, ["config", "--get", "remote.origin.url"]),
+            branch: git(absoluteRoot, ["branch", "--show-current"]),
+            head: git(absoluteRoot, ["rev-parse", "HEAD"]),
         },
-        installedProviders: Object.values(PROVIDERS).map(({ id, category, capabilities, docs }) => ({ id, category, capabilities, docs })),
+        workflows: repositoryPaths.filter((path) => /^\.github\/workflows\/[^/]+\.(?:yml|yaml)$/iu.test(path)).sort(),
+        installedExtensions: Object.values(catalog).map((manifest) => ({
+            id: manifest.id,
+            type: manifest.type,
+            version: manifest.version,
+            status: manifest.status,
+            configSchemaVersion: manifest.configSchemaVersion,
+        })).sort((left, right) => left.type.localeCompare(right.type) || left.id.localeCompare(right.id)),
     };
 }
 
-function object(value, name) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
+function modeAllowed(inspection, mode) {
+    if (mode === "initialize" && inspection.config.status !== "missing") throw new Error("initialize requires a missing config");
+    if (mode === "reconfigure" && inspection.config.status !== "valid") throw new Error("reconfigure requires a valid config/v1 project");
+    if (mode === "reinitialize" && inspection.config.status === "missing") throw new Error("reinitialize requires an existing config");
 }
 
-function selectedProviders(answers) {
-    if (!Array.isArray(answers.providerSelection)) throw new Error("providerSelection is required even when no provider is selected");
-    if (new Set(answers.providerSelection).size !== answers.providerSelection.length) throw new Error("providerSelection contains duplicates");
-    if (answers.providerSelection.includes("none")) {
-        if (answers.providerSelection.length !== 1) throw new Error("providerSelection none cannot be combined with a provider");
-        return new Set();
+export async function routeSetup(root, mode, { extensionIds = [] } = {}) {
+    if (!SETUP_MODES.has(mode) || mode === "initialize") throw new Error("Use reconfigure or reinitialize for a read-only setup route");
+    const inspection = await inspectProject(root);
+    modeAllowed(inspection, mode);
+    let defaults = null;
+    let ids = [...new Set(extensionIds)];
+    if (mode === "reconfigure") {
+        const raw = JSON.parse(await readFile(resolve(root, ".release-ops", "config.json"), "utf8"));
+        ids = raw.extensions.map(({ extensionId }) => extensionId);
+        const registry = await hydrateExtensions(ids);
+        defaults = await validateConfig(raw, { extensions: registry });
     }
-    for (const id of answers.providerSelection) if (!PROVIDERS[id]) throw new Error(`Selected provider is not installed: ${id}`);
-    return new Set(answers.providerSelection);
+    const selected = ids.length ? await hydrateExtensions(ids) : {};
+    const typeOrder = new Map([["stack", 0], ["signing", 1], ["release", 2], ["provider", 3]]);
+    const questions = Object.values(selected).sort((left, right) => typeOrder.get(left.type) - typeOrder.get(right.type)
+        || left.id.localeCompare(right.id)).map((manifest) => ({ extension: publicExtension(manifest), phase: manifest.type }));
+    return {
+        schemaVersion: "release-ops/setup-route/v1",
+        mode,
+        readOnly: true,
+        inspection,
+        defaults,
+        questionOrder: QUESTION_PHASES,
+        selectedExtensions: questions,
+        inheritance: mode === "reconfigure" ? "current-config-defaults" : "none",
+    };
 }
 
-function repositoryDecision(value, name) {
-    object(value, name);
-    if (!["existing", "create"].includes(value.action)) throw new Error(`${name}.action must be existing or create`);
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value.repository ?? "")) throw new Error(`${name}.repository is invalid`);
-    if (value.action === "create" && !["private", "public"].includes(value.visibility)) throw new Error(`${name}.visibility is required for creation`);
-    if (value.action === "create" && (typeof value.defaultBranch !== "string" || !value.defaultBranch)) {
-        throw new Error(`${name}.defaultBranch is required for creation`);
+function validateAnswers(answers, requestedMode = answers?.mode) {
+    exactKeys(answers, "answers", new Set([
+        "schemaVersion", "mode", "project", "extensions", "repositories", "managedFileAdoptions",
+    ]));
+    if (answers.schemaVersion !== ANSWERS_SCHEMA) throw new Error(`Answers must use ${ANSWERS_SCHEMA}`);
+    if (!SETUP_MODES.has(answers.mode) || answers.mode !== requestedMode) throw new Error("Answers mode does not match --mode");
+    exactKeys(answers.project, "answers.project", new Set(["name"]));
+    if (!Array.isArray(answers.extensions) || !Array.isArray(answers.repositories) || !Array.isArray(answers.managedFileAdoptions)) {
+        throw new Error("Answers extensions, repositories, and managedFileAdoptions must be arrays");
     }
+    for (const [index, decision] of answers.repositories.entries()) {
+        exactKeys(decision, `answers.repositories[${index}]`, new Set([
+            "instanceId", "role", "action", "repository", "visibility", "defaultBranch",
+        ]));
+        if (!ID.test(decision.instanceId ?? "") || !["source", "distribution"].includes(decision.role)
+            || !["existing", "create"].includes(decision.action) || !REPOSITORY.test(decision.repository ?? "")) {
+            throw new Error(`answers.repositories[${index}] is invalid`);
+        }
+        if (decision.action === "create" && (!decision.visibility || !decision.defaultBranch)) {
+            throw new Error(`answers.repositories[${index}] creation needs visibility and defaultBranch`);
+        }
+    }
+    return answers;
 }
 
-async function repositoryPlan(answers, token, githubOverride = null) {
-    object(answers.github, "github");
-    if (typeof answers.github.enabled !== "boolean") throw new Error("github.enabled must be explicitly true or false");
-    if (!answers.github.enabled) return { source: null, distribution: null, releaseMode: "local", actions: [] };
-    if (!token) throw new Error("github_token or GITHUB_TOKEN is required to verify GitHub setup");
-    repositoryDecision(answers.github.source, "github.source");
-    const sourceInput = answers.github.source;
-    const github = githubOverride ?? createGitHubClient({
-        sourceRepository: sourceInput.repository,
-        publicRepository: answers.github.distribution?.repository,
+function configFromAnswers(answers) {
+    return { schemaVersion: CONFIG_SCHEMA, project: answers.project, extensions: answers.extensions };
+}
+
+function githubClientForRelease(instance, token, override) {
+    if (override) return override;
+    if (!token) throw new Error("github_token or GITHUB_TOKEN is required for GitHub repository verification");
+    return createGitHubClient({
+        sourceRepository: instance.config.source?.repository,
+        publicRepository: instance.config.distribution?.repository,
         sourceToken: token,
         publicToken: token,
     });
-    const inspectOrPlan = async (decision, expectedVisibility = null) => {
+}
+
+async function planRepositories(config, registry, decisions, token, githubOverride) {
+    const release = config.extensions.find((instance) => registry[instance.extensionId].type === "release");
+    const expected = release.config.mode === "local" ? [] : [
+        ["source", release.config.source],
+        ...(release.config.distribution ? [["distribution", release.config.distribution]] : []),
+    ];
+    if (!expected.length) {
+        if (decisions.length) throw new Error("Local release configuration cannot include repository operations");
+        return [];
+    }
+    const github = githubClientForRelease(release, token, githubOverride);
+    if (decisions.length !== expected.length) throw new Error("Repository decisions do not match the release topology");
+    const result = [];
+    for (const [role, identity] of expected) {
+        const decision = decisions.find((candidate) => candidate.instanceId === release.instanceId && candidate.role === role);
+        if (!decision || decision.repository !== identity.repository) throw new Error(`Repository decision is missing for ${role}`);
+        let actual;
         if (decision.action === "existing") {
-            const result = await inspectRepository({ github, repository: decision.repository });
-            if (expectedVisibility && result.visibility !== expectedVisibility) throw new Error(`${decision.repository} must be ${expectedVisibility}`);
-            if (result.archived || result.disabled) throw new Error(`${decision.repository} is archived or disabled`);
-            return {
-                identity: {
-                    repository: result.repository,
-                    owner: result.owner,
-                    name: result.name,
-                    visibility: result.visibility,
-                    defaultBranch: result.defaultBranch,
-                },
-                action: "existing",
-            };
-        }
-        if (expectedVisibility && decision.visibility !== expectedVisibility) throw new Error(`${decision.repository} must be ${expectedVisibility}`);
-        await createRepository({ github, repository: decision.repository, visibility: decision.visibility, dryRun: true });
-        return {
-            identity: {
-                repository: decision.repository,
-                owner: decision.repository.split("/")[0],
-                name: decision.repository.split("/")[1],
-                visibility: decision.visibility,
-                defaultBranch: decision.defaultBranch,
-            },
-            action: "create",
-        };
-    };
-    const source = await inspectOrPlan(sourceInput);
-    if (source.identity.visibility === "public") {
-        if (answers.github.distribution) throw new Error("A public source repository must not configure a separate distribution repository");
-        return { source: source.identity, distribution: null, releaseMode: "same-repository", actions: [{ role: "source", ...source }] };
-    }
-    repositoryDecision(answers.github.distribution, "github.distribution");
-    const distribution = await inspectOrPlan(answers.github.distribution, "public");
-    if (distribution.identity.repository === source.identity.repository) throw new Error("Distribution repository must differ from private source");
-    return {
-        source: source.identity,
-        distribution: distribution.identity,
-        releaseMode: "dual-repository",
-        actions: [{ role: "source", ...source }, { role: "distribution", ...distribution }],
-    };
-}
-
-function providerConfiguration(answers, selected, githubEnabled) {
-    const providers = {};
-    for (const [id, manifest] of Object.entries(PROVIDERS)) {
-        if (!selected.has(id)) continue;
-        object(answers.providers?.[id], `providers.${id}`);
-        if (id === "sentry") {
-            providers[id] = {
-                ...answers.providers[id],
-                enabled: true,
-                schemaVersion: manifest.configSchemaVersion,
-                apiBase: answers.providers[id].apiBase ?? "https://sentry.io/api/0",
-                issueSync: githubEnabled,
-                lookbackMinutes: answers.providers[id].lookbackMinutes ?? 75,
-                schedule: answers.providers[id].schedule ?? "17 * * * *",
-                releaseTemplate: answers.providers[id].releaseTemplate ?? "{project}@{version}",
-                distTemplate: answers.providers[id].distTemplate ?? "{version}",
-                debugArtifacts: answers.providers[id].debugArtifacts ?? [],
-            };
+            actual = await inspectRepository({ github, repository: decision.repository });
         } else {
-            providers[id] = { ...answers.providers[id], enabled: true, schemaVersion: manifest.configSchemaVersion };
+            if (decision.visibility !== identity.visibility || decision.defaultBranch !== identity.defaultBranch) {
+                throw new Error(`Repository creation does not match configured identity: ${decision.repository}`);
+            }
+            actual = await createRepository({ github, repository: decision.repository, visibility: decision.visibility, dryRun: true });
+            actual.defaultBranch = decision.defaultBranch;
+        }
+        if (actual.visibility !== identity.visibility || actual.defaultBranch !== identity.defaultBranch
+            || actual.archived || actual.disabled) throw new Error(`Repository identity does not match config: ${decision.repository}`);
+        result.push({
+            instanceId: release.instanceId,
+            role,
+            action: decision.action,
+            identity: { repository: actual.repository, visibility: actual.visibility, defaultBranch: actual.defaultBranch },
+        });
+    }
+    return result;
+}
+
+async function runProcessorNodes(root, config, graph, registry, entrypoint) {
+    const workflows = [];
+    const managedFiles = [];
+    const results = {};
+    for (const node of nodesForEntrypoint(graph, entrypoint)) {
+        const instance = config.extensions.find((candidate) => candidate.instanceId === node.instanceId);
+        const manifest = registry[instance.extensionId];
+        const processor = manifest.processors.find((candidate) => candidate.id === node.processorId);
+        const module = await import(pathToFileURL(resolve(PLUGIN_ROOT, processor.module)).href);
+        const callback = module[node.entrypoint];
+        if (typeof callback !== "function") throw new Error(`Processor entrypoint is unavailable: ${node.id}`);
+        const api = createKernelApi({
+            root,
+            node,
+            managedFileSink: (contribution) => managedFiles.push(contribution),
+            workflowSink: (contribution) => workflows.push(contribution),
+        });
+        results[node.id] = await callback(freeze({
+            api,
+            config,
+            graph,
+            instance,
+            manifest,
+            node,
+            inspection: null,
+            operation: entrypoint,
+            arguments: [],
+            execute: false,
+        }));
+    }
+    return { workflows, managedFiles, results };
+}
+
+function requiredSecrets(config, graph) {
+    const byRole = new Map();
+    for (const node of graph.nodes) {
+        const instance = config.extensions.find((candidate) => candidate.instanceId === node.instanceId);
+        for (const declaration of node.secretRoles) {
+            const ownerInstanceId = declaration.sourceInstanceId ?? instance.instanceId;
+            const ownerInstance = config.extensions.find((candidate) => candidate.instanceId === ownerInstanceId);
+            const name = declaration.configuredName ?? ownerInstance.config.secretNames?.[declaration.role] ?? declaration.defaultName;
+            if (!name) continue;
+            const key = `${ownerInstanceId}:${declaration.role}`;
+            const current = byRole.get(key) ?? {
+                instanceId: ownerInstanceId,
+                role: declaration.role,
+                name,
+                required: false,
+                scope: "processor",
+                processors: [],
+            };
+            current.required ||= declaration.required;
+            current.processors.push(node.id);
+            byRole.set(key, current);
         }
     }
-    return providers;
-}
-
-function requiredSecrets(config) {
-    const result = new Map();
-    for (const unit of config.build.units) for (const name of unit.requiredSecretNames ?? []) result.set(name, "build-and-sign");
-    for (const name of adapterRequiredSecrets(config)) result.set(name, "build-and-sign");
-    if (config.hosting.github.releaseMode === "dual-repository") result.set("RELEASE_REPO_TOKEN", "public-distribution-write");
-    for (const [id, providerConfig] of Object.entries(config.providers)) {
-        if (!providerConfig.enabled) continue;
-        for (const [role, name] of Object.entries(PROVIDERS[id].requiredSecrets ?? {})) {
-            if (role === "projectProvision") continue;
-            if (!providerConfig.issueSync && ["incidentRead", "incidentWrite"].includes(role)) continue;
-            result.set(name, `${id}:${role}`);
+    for (const instance of config.extensions) {
+        for (const [role, name] of Object.entries(instance.config.secretNames ?? {})) {
+            const key = `${instance.instanceId}:${role}`;
+            if (!byRole.has(key)) byRole.set(key, {
+                instanceId: instance.instanceId,
+                role,
+                name,
+                required: false,
+                scope: "local-only",
+                processors: [],
+            });
         }
     }
-    return [...result].sort(([left], [right]) => left.localeCompare(right)).map(([name, purpose]) => ({ name, purpose }));
+    return [...byRole.values()].map((entry) => ({ ...entry, processors: [...new Set(entry.processors)].sort() }))
+        .sort((left, right) => left.instanceId.localeCompare(right.instanceId) || left.role.localeCompare(right.role));
 }
 
-function configFromAnswers(answers, hosting) {
-    object(answers.project, "project");
-    object(answers.build, "build");
-    object(answers.versioning, "versioning");
-    const selected = selectedProviders(answers);
-    const publicMode = hosting.releaseMode === "same-repository";
-    const config = {
-        schemaVersion: CONFIG_SCHEMA,
-        project: answers.project,
-        build: answers.build,
-        versioning: answers.versioning,
-        hosting: {
-            github: {
-                enabled: answers.github.enabled,
-                source: hosting.source,
-                distribution: hosting.distribution,
-                releaseMode: hosting.releaseMode,
-            },
-        },
-        release: {
-            workflowFile: ".github/workflows/publish-release.yml",
-            tagTemplate: "v{version}",
-            titleTemplate: `${answers.project.name} {version}`,
-            manifestSchema: RELEASE_SCHEMA,
-            publicReadmeSource: null,
-            publicReadmeTarget: answers.github.enabled ? (publicMode ? "docs/releases/README.md" : "README.md") : null,
-            latestManifest: "latest.json",
-            latestCompatibility: "release-ops",
-            localOutputDirectory: "dist/release-ops",
-            ...answers.release,
-            publicReadmeTarget: answers.github.enabled ? (publicMode ? "docs/releases/README.md" : "README.md") : null,
-        },
-        providers: providerConfiguration(answers, selected, answers.github.enabled),
-    };
-    return validateConfig(config);
-}
-
-function publicManagedPlan(plan) {
-    return {
-        schemaVersion: plan.schemaVersion,
-        operations: plan.operations,
-        conflicts: plan.conflicts,
-        adoptions: plan.adoptions,
-    };
+function digestPlan(plan) {
+    const payload = { ...plan };
+    delete payload.planDigest;
+    return sha256(stableJson(payload));
 }
 
 export async function createSetupPlan(root, answers, {
+    mode = answers?.mode,
     token = process.env.github_token ?? process.env.GITHUB_TOKEN,
     github = null,
 } = {}) {
-    if (answers?.schemaVersion !== ANSWERS_SCHEMA) throw new Error(`Answers must use ${ANSWERS_SCHEMA}`);
+    validateAnswers(answers, mode);
     const inspection = await inspectProject(root);
-    const hosting = await repositoryPlan(answers, token, github);
-    const config = configFromAnswers(answers, hosting);
-    const adapter = adapterById(config.project.adapter);
-    if (!adapter) throw new Error("Selected adapter is not installed");
-    const managed = await planProjectFiles(root, config, {
-        includeConfig: true,
-        adoptions: answers.managedFileAdoptions ?? [],
+    modeAllowed(inspection, mode);
+    const registry = await hydrateExtensions(answers.extensions.map(({ extensionId }) => extensionId));
+    const config = await validateConfig(configFromAnswers(answers), { extensions: registry });
+    const graph = await createProcessorGraph(config, registry);
+    const contributions = await runProcessorNodes(resolve(root), config, graph, registry, "setup");
+    const repositories = await planRepositories(config, registry, answers.repositories, token, github);
+    const managed = await planProjectFiles(resolve(root), config, graph, registry, contributions.workflows, {
+        adoptions: answers.managedFileAdoptions,
+        contributions: contributions.managedFiles,
     });
-    if (managed.conflicts.length) throw new Error(`Setup plan has managed file conflicts: ${managed.conflicts.map(({ path }) => path).join(", ")}`);
+    if (managed.conflicts.length) {
+        throw new Error(`Setup plan has managed file conflicts: ${managed.conflicts.map(({ path }) => path).join(", ")}`);
+    }
     const plan = {
         schemaVersion: PLAN_SCHEMA,
+        mode,
         root: resolve(root),
         inspection,
         config,
-        repositories: hosting.actions,
-        requiredSecrets: requiredSecrets(config),
+        graph,
+        repositories,
+        requiredSecrets: requiredSecrets(config, graph),
         managedFiles: publicManagedPlan(managed),
     };
-    plan.planDigest = planDigest(plan);
+    plan.planDigest = digestPlan(plan);
     return plan;
+}
+
+async function applyRepositories(plan, registry, token, githubOverride) {
+    if (!plan.repositories.length) return [];
+    const release = plan.config.extensions.find((instance) => registry[instance.extensionId].type === "release");
+    const github = githubClientForRelease(release, token, githubOverride);
+    const results = [];
+    for (const operation of plan.repositories) {
+        const identity = operation.identity;
+        let result;
+        if (operation.action === "existing") {
+            result = await inspectRepository({ github, repository: identity.repository });
+        } else {
+            result = await createRepository({
+                github,
+                repository: identity.repository,
+                visibility: identity.visibility,
+                confirmation: `${identity.repository}:${identity.visibility}`,
+                dryRun: false,
+                initialize: operation.role === "distribution",
+            });
+        }
+        if (result.visibility !== identity.visibility || (result.defaultBranch && result.defaultBranch !== identity.defaultBranch)
+            || result.archived || result.disabled) throw new Error(`Repository changed after planning: ${identity.repository}`);
+        if (operation.action === "create" && operation.role === "distribution") {
+            await ensureDistributionReadme({
+                github,
+                repository: identity.repository,
+                branch: identity.defaultBranch,
+                projectName: plan.config.project.name,
+            });
+        }
+        results.push({ instanceId: operation.instanceId, role: operation.role, ...result });
+    }
+    return results;
 }
 
 export async function applySetupPlan(plan, confirmation, {
     token = process.env.github_token ?? process.env.GITHUB_TOKEN,
-    github: githubOverride = null,
+    github = null,
+    failAfter = null,
 } = {}) {
-    if (plan?.schemaVersion !== PLAN_SCHEMA) throw new Error(`Setup plan must use ${PLAN_SCHEMA}`);
-    if (!/^[0-9a-f]{64}$/u.test(confirmation ?? "") || confirmation !== plan.planDigest || planDigest(plan) !== plan.planDigest) {
+    if (plan?.schemaVersion !== PLAN_SCHEMA || !HASH.test(confirmation ?? "")
+        || confirmation !== plan.planDigest || digestPlan(plan) !== plan.planDigest) {
         throw new Error("--confirm must exactly match the setup plan SHA-256 digest");
     }
     const root = resolve(plan.root);
-    const config = validateConfig(plan.config);
-    const preflight = await planProjectFiles(root, config, {
-        includeConfig: true,
-        adoptions: plan.managedFiles.adoptions ?? [],
+    const registry = await hydrateExtensions(plan.config.extensions.map(({ extensionId }) => extensionId));
+    const config = await validateConfig(plan.config, { extensions: registry });
+    const graph = await createProcessorGraph(config, registry);
+    if (stableJson(graph) !== stableJson(plan.graph)) throw new Error("Extension code or processor graph changed after planning");
+    const contributions = await runProcessorNodes(root, config, graph, registry, "setup");
+    const preflight = await planProjectFiles(root, config, graph, registry, contributions.workflows, {
+        adoptions: plan.managedFiles.adoptions,
+        contributions: contributions.managedFiles,
     });
-    if (JSON.stringify(publicManagedPlan(preflight)) !== JSON.stringify(plan.managedFiles)) {
-        throw new Error("Repository files changed after the confirmed setup plan");
+    if (stableJson(publicManagedPlan(preflight)) !== stableJson(plan.managedFiles)) {
+        throw new Error("Repository files or workflow model changed after the confirmed plan");
     }
-    const repositoryResults = [];
-    if (config.hosting.github.enabled) {
-        if (!token) throw new Error("github_token or GITHUB_TOKEN is required to apply GitHub setup");
-        const github = githubOverride ?? createGitHubClient({
-            sourceRepository: config.hosting.github.source.repository,
-            publicRepository: config.hosting.github.distribution?.repository,
-            sourceToken: token,
-            publicToken: token,
-        });
-        for (const repository of plan.repositories) {
-            let result;
-            if (repository.action === "existing") {
-                result = await inspectRepository({ github, repository: repository.identity.repository });
-            } else {
-                result = await createRepository({
-                    github,
-                    repository: repository.identity.repository,
-                    visibility: repository.identity.visibility,
-                    confirmation: `${repository.identity.repository}:${repository.identity.visibility}`,
-                    dryRun: false,
-                    initialize: repository.role === "distribution",
-                });
-            }
-            if (result.visibility !== repository.identity.visibility) throw new Error("Repository visibility changed after planning");
-            if (result.defaultBranch && result.defaultBranch !== repository.identity.defaultBranch) {
-                throw new Error(`Repository default branch changed after planning: ${repository.identity.repository}`);
-            }
-            if (repository.role === "distribution" && repository.action === "create") {
-                await ensureDistributionReadme({
-                    github,
-                    repository: repository.identity.repository,
-                    branch: repository.identity.defaultBranch,
-                    projectName: config.project.name,
-                });
-            }
-            repositoryResults.push({ role: repository.role, ...result });
-        }
-    }
-    const managedFiles = await installProjectFiles(root, config, {
-        includeConfig: true,
+    const repositories = await applyRepositories(plan, registry, token, github);
+    const managedFiles = await installProjectFiles(root, preflight, {
         expectedPlan: plan.managedFiles,
-        adoptions: plan.managedFiles.adoptions ?? [],
+        configDigest: graph.configDigest,
+        graphDigest: graph.graphDigest,
+        failAfter,
     });
     return {
-        schemaVersion: "release-ops/apply-result/v2",
+        schemaVersion: "release-ops/apply-result/v1",
         success: true,
         root,
         planDigest: plan.planDigest,
-        repositories: repositoryResults,
+        repositories,
         managedFiles,
     };
 }
 
+async function readManagedManifest(root) {
+    try {
+        return JSON.parse(await readFile(resolve(root, ".release-ops", "managed-files.json"), "utf8"));
+    } catch (error) {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+    }
+}
+
+function adoptedWorkflows(manifest) {
+    return Object.entries(manifest?.files ?? {}).flatMap(([path, record]) =>
+        record.mode === "adopted" && /^\.github\/workflows\//u.test(path)
+            ? [{ path, ownerInstanceId: record.ownerInstanceId, sha256: record.desiredHash }]
+            : []);
+}
+
+async function auditRemote(config, registry, token, githubOverride, env) {
+    const release = config.extensions.find((instance) => registry[instance.extensionId].type === "release");
+    if (release.config.mode === "local") {
+        const available = new Set(Object.entries(env).filter(([, value]) => value).map(([name]) => name));
+        return { remoteVerified: true, check: { status: "not-applicable" }, available };
+    }
+    if (!token) return {
+        remoteVerified: false,
+        check: { status: "fail", message: "GitHub credential is unavailable" },
+        available: new Set(),
+    };
+    try {
+        const github = githubClientForRelease(release, token, githubOverride);
+        const identities = [release.config.source, ...(release.config.distribution ? [release.config.distribution] : [])];
+        for (const identity of identities) {
+            const actual = await inspectRepository({ github, repository: identity.repository });
+            if (actual.visibility !== identity.visibility || actual.defaultBranch !== identity.defaultBranch
+                || actual.archived || actual.disabled) throw new Error(`Remote identity mismatch: ${identity.repository}`);
+        }
+        const metadata = await listSecretMetadata({ github, repository: release.config.source.repository });
+        const available = new Set(metadata.secrets.map(({ name }) => name));
+        available.add("GITHUB_TOKEN");
+        return {
+            remoteVerified: true,
+            check: { status: "pass" },
+            available,
+        };
+    } catch (error) {
+        return { remoteVerified: false, check: { status: "fail", message: error.message }, available: new Set() };
+    }
+}
+
 export async function auditProject(root, {
     token = process.env.github_token ?? process.env.GITHUB_TOKEN,
-    github: githubOverride = null,
+    github = null,
     env = process.env,
 } = {}) {
+    const absoluteRoot = resolve(root);
     const checks = {
         configuration: { status: "fail" },
+        graph: { status: "fail" },
+        workflows: { status: "fail" },
         managedFiles: { status: "fail" },
-        localBuild: { status: "configured" },
-        githubHosting: { status: "disabled" },
-        releasePublication: { status: "configured" },
-        providers: {},
-        incidentResolution: { status: "not-applicable" },
+        repositories: { status: "fail" },
+        secrets: { status: "fail" },
     };
+    const extensions = {};
     let config;
+    let registry;
+    let graph;
     try {
-        config = await loadConfig(root);
-        checks.configuration = { status: "pass", schemaVersion: config.schemaVersion };
-        const managed = await planProjectFiles(root, config, { includeConfig: true });
-        const changed = managed.operations.filter(({ operation }) => operation !== "unchanged");
-        checks.managedFiles = changed.length || managed.conflicts.length
-            ? { status: "fail", changed: changed.map(({ path, operation }) => ({ path, operation })), conflicts: managed.conflicts }
-            : { status: "pass" };
+        const raw = JSON.parse(await readFile(resolve(absoluteRoot, ".release-ops", "config.json"), "utf8"));
+        registry = await hydrateExtensions(raw.extensions?.map(({ extensionId }) => extensionId) ?? []);
+        config = await validateConfig(raw, { extensions: registry });
+        checks.configuration = { status: "pass", message: configDigest(config) };
+        graph = await createProcessorGraph(config, registry);
     } catch (error) {
-        checks.configuration = { status: "fail", error: error.message };
-        return { schemaVersion: AUDIT_SCHEMA, success: false, remoteVerified: false, checks };
+        checks.configuration = { status: "fail", message: error.message };
+        return { schemaVersion: AUDIT_SCHEMA, success: false, remoteVerified: false, checks, extensions };
     }
-    let remoteVerified = !config.hosting.github.enabled;
-    const availableSecrets = new Set();
-    if (!config.hosting.github.enabled) {
-        for (const [name, value] of Object.entries(env)) if (value) availableSecrets.add(name);
-    }
-    if (config.hosting.github.enabled) {
-        if (!token) {
-            checks.githubHosting = { status: "fail", reason: "credential-unavailable" };
-        } else {
-            try {
-                const github = githubOverride ?? createGitHubClient({
-                    sourceRepository: config.hosting.github.source.repository,
-                    publicRepository: config.hosting.github.distribution?.repository,
-                    sourceToken: token,
-                    publicToken: token,
-                });
-                const identities = [config.hosting.github.source, ...(config.hosting.github.distribution ? [config.hosting.github.distribution] : [])];
-                const repositories = [];
-                for (const identity of identities) {
-                    const actual = await inspectRepository({ github, repository: identity.repository });
-                    if (actual.visibility !== identity.visibility || actual.defaultBranch !== identity.defaultBranch || actual.archived || actual.disabled) {
-                        throw new Error(`Remote repository identity does not match configuration: ${identity.repository}`);
-                    }
-                    repositories.push(actual);
-                }
-                const metadata = await listSecretMetadata({ github, repository: config.hosting.github.source.repository });
-                metadata.secrets.forEach(({ name }) => availableSecrets.add(name));
-                checks.githubHosting = { status: "pass", repositories };
-                remoteVerified = true;
-            } catch (error) {
-                checks.githubHosting = { status: "fail", reason: "remote-verification-failed", error: error.message };
-            }
+    let manifest;
+    try {
+        const installedGraph = JSON.parse(await readFile(resolve(absoluteRoot, ".release-ops", "processor-graph.json"), "utf8"));
+        checks.graph = stableJson(installedGraph) === stableJson(graph)
+            ? { status: "pass", message: graph.graphDigest }
+            : { status: "fail", message: "Config or extension code does not match the installed processor graph; re-plan/apply is required" };
+        manifest = await readManagedManifest(absoluteRoot);
+        if (!manifest) throw new Error("Managed file state is missing");
+        if (manifest.configDigest !== graph.configDigest || manifest.graphDigest !== graph.graphDigest) {
+            throw new Error("Config or graph digest differs from managed state; re-plan/apply is required");
         }
+    } catch (error) {
+        if (checks.graph.status !== "fail") checks.graph = { status: "fail", message: error.message };
     }
-    const required = requiredSecrets(config);
-    const buildSecretNames = required.filter(({ purpose }) => purpose === "build-and-sign").map(({ name }) => name);
-    const missingLocalBuild = config.hosting.github.enabled
-        ? []
-        : buildSecretNames.filter((name) => !availableSecrets.has(name));
-    checks.localBuild = missingLocalBuild.length
-        ? { status: "fail", missingEnvironmentNames: missingLocalBuild }
-        : {
-            status: "configured",
-            units: config.build.units.map(({ id, target, runner }) => ({ id, target, runner })),
-            requiredSecretNames: buildSecretNames,
-        };
-    if (!config.hosting.github.enabled) {
-        try {
-            const runtimeRoot = await resolveRepositoryPath(root, ".release-ops/runtime", {
-                name: "Release Ops runtime",
-                mustExist: true,
-            });
-            await import(pathToFileURL(join(runtimeRoot, "local-release.mjs")).href);
-            checks.releasePublication = { status: "configured", entrypoint: "loadable" };
-        } catch (error) {
-            checks.releasePublication = { status: "fail", reason: "local-entrypoint-unavailable", error: error.message };
+    try {
+        const contributions = await runProcessorNodes(absoluteRoot, config, graph, registry, "setup");
+        const managed = await planProjectFiles(absoluteRoot, config, graph, registry, contributions.workflows, {
+            adoptions: adoptedWorkflows(manifest),
+            contributions: contributions.managedFiles,
+        });
+        const changed = managed.operations.filter(({ operation }) => operation !== "unchanged");
+        checks.workflows = manifest?.workflowDigest === managed.workflowDigest
+            ? { status: "pass", message: managed.workflowDigest }
+            : { status: "fail", message: "Workflow digest differs from managed state; re-plan/apply is required" };
+        checks.managedFiles = !changed.length && !managed.conflicts.length
+            ? { status: "pass" }
+            : { status: "fail", message: `Managed paths changed: ${changed.map(({ path }) => path).join(", ")}` };
+    } catch (error) {
+        checks.workflows = { status: "fail", message: error.message };
+        checks.managedFiles = { status: "fail", message: error.message };
+    }
+    const secrets = requiredSecrets(config, graph);
+    const remote = await auditRemote(config, registry, token, github, env);
+    checks.repositories = remote.check;
+    const localNames = new Set(Object.entries(env).filter(([, value]) => value).map(([name]) => name));
+    const missing = secrets.filter((secret) => secret.required && secret.scope === "processor"
+        && !remote.available.has(secret.name) && !localNames.has(secret.name));
+    checks.secrets = missing.length
+        ? { status: "fail", message: `Missing Secret roles: ${missing.map(({ instanceId, role }) => `${instanceId}:${role}`).join(", ")}` }
+        : { status: "pass" };
+    try {
+        const audit = await runProcessorNodes(absoluteRoot, config, graph, registry, "audit");
+        for (const instance of config.extensions) {
+            const nodes = graph.nodes.filter((node) => node.instanceId === instance.instanceId && node.stage === "audit");
+            const results = nodes.map((node) => audit.results[node.id]).filter(Boolean);
+            extensions[instance.instanceId] = results.some(({ status }) => status === "fail")
+                ? { status: "fail", message: "Extension audit failed" }
+                : { status: results.length ? "configured" : "not-applicable" };
         }
+    } catch (error) {
+        for (const instance of config.extensions) extensions[instance.instanceId] = { status: "fail", message: error.message };
     }
-    for (const [id, provider] of Object.entries(PROVIDERS)) {
-        const providerConfig = config.providers[id];
-        if (!providerConfig?.enabled) checks.providers[id] = { status: "disabled" };
-        else {
-            const missing = required.filter(({ purpose }) => purpose.startsWith(`${id}:`)).map(({ name }) => name).filter((name) => !availableSecrets.has(name));
-            let hookError = null;
-            if (provider.buildHook) {
-                try {
-                    const runtimeRoot = await resolveRepositoryPath(root, ".release-ops/runtime", {
-                        name: "Release Ops runtime",
-                        mustExist: true,
-                    });
-                    await loadProviderBuildHook(provider, { runtimeRoot });
-                } catch (error) {
-                    hookError = error.message;
-                }
-            }
-            checks.providers[id] = missing.length
-                ? { status: "fail", missingSecretMetadata: missing }
-                : hookError ? { status: "fail", reason: "build-hook-unavailable", error: hookError } : { status: "pass" };
-            if (providerConfig.issueSync) checks.incidentResolution = missing.length ? { status: "fail" } : { status: "configured" };
-        }
-    }
-    const missingRelease = required.filter(({ purpose }) => !purpose.includes(":"))
-        .map(({ name }) => name).filter((name) => config.hosting.github.enabled && !availableSecrets.has(name));
-    if (missingRelease.length) checks.releasePublication = { status: "fail", missingSecretMetadata: missingRelease };
-    const failed = Object.values(checks).some((value) => value?.status === "fail")
-        || Object.values(checks.providers).some(({ status }) => status === "fail");
-    return { schemaVersion: AUDIT_SCHEMA, success: !failed && remoteVerified, remoteVerified, checks };
+    const failed = Object.values(checks).some(({ status }) => status === "fail")
+        || Object.values(extensions).some(({ status }) => status === "fail");
+    return {
+        schemaVersion: AUDIT_SCHEMA,
+        success: !failed && remote.remoteVerified,
+        remoteVerified: remote.remoteVerified,
+        checks,
+        extensions,
+    };
 }
 
 export async function writeJson(path, value) {

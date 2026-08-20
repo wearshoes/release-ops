@@ -1,1 +1,0 @@
-{"schemaVersion":"release-ops/adapter/v2","id":"dotnet","status":"supported","docs":"docs/stacks/dotnet.md","detects":["*.sln","*.csproj"],"artifactTypes":["binary","package"],"debugArtifactTypes":["dif"],"targets":[{"id":"linux","runner":"ubuntu-latest"},{"id":"windows","runner":"windows-latest"},{"id":"macos","runner":"macos-latest"}]}

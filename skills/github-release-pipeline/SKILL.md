@@ -5,7 +5,7 @@ description: Audit or explicitly publish a configured Release Ops GitHub release
 
 # GitHub Release Pipeline
 
-Read the target repository instructions, its `release-ops/config/v2` configuration, [GitHub Release SOP](../../docs/workflows/github-release.md), and [private-to-public SOP](../../docs/workflows/private-to-public.md) when configured.
+Read the target repository instructions, `release-ops/config/v1`, `.release-ops/processor-graph.json`, [GitHub Release SOP](../../docs/workflows/github-release.md), and [private-to-public SOP](../../docs/workflows/private-to-public.md) when configured. Find the release instance by graph type and its `release-context`/`release-artifacts` capabilities; never assume an instance ID or rebuild a legacy nested config view.
 
 ## Gate
 

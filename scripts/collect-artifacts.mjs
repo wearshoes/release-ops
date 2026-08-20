@@ -5,6 +5,7 @@ import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
 import { isMainModule } from "./cli-entry.mjs";
+import { allBuildUnits } from "./config-query.mjs";
 import { loadConfig } from "./config.mjs";
 import { resolveRepositoryPath } from "./path-safety.mjs";
 import { readCanonicalVersion } from "./release-publisher.mjs";
@@ -21,7 +22,7 @@ export async function collectBuildArtifacts(config, {
     unitId,
     output = ".release-ops/upload",
 } = {}) {
-    const unit = config.build.units.find(({ id }) => id === unitId);
+    const unit = allBuildUnits(config).find(({ id }) => id === unitId);
     if (!unit) throw new Error("A valid build unit is required for artifact collection");
     const canonical = await readCanonicalVersion(config, root);
     const values = { version: canonical.version, ...canonical.buildNumbers };
