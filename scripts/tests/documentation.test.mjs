@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { loadExtensionCatalog } from "../extension-registry.mjs";
+import { renderReadme } from "../generate-readme.mjs";
 import { inspectProject } from "../setup-core.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -95,4 +96,11 @@ test("machine schemas cover every public v1 contract", async () => {
         assert.match(JSON.stringify(schema), new RegExp(identifier.replaceAll("/", "\\/"), "u"));
         assert.equal(schema.additionalProperties, false);
     }
+});
+
+test("README manifest generation is stable with LF and CRLF checkouts", async () => {
+    const readme = await readFile(join(ROOT, "README.md"), "utf8");
+    assert.equal(await renderReadme(readme), readme);
+    const crlf = readme.replaceAll("\n", "\r\n");
+    assert.equal(await renderReadme(crlf), crlf);
 });
