@@ -3,8 +3,8 @@
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
+import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { createSentryClient } from "./sentry-client.mjs";
@@ -109,7 +109,7 @@ async function main() {
     if (!result.success) process.exitCode = 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`Issue resolution failed: ${error.message}\n`);
         process.exitCode = 1;

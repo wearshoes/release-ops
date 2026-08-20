@@ -3,8 +3,8 @@
 import { spawn } from "node:child_process";
 import { chmod } from "node:fs/promises";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
+import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
 
 const SENSITIVE_ENVIRONMENT = /(?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY|KEYSTORE|LICENSE|SERIAL)$/iu;
@@ -62,7 +62,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`Release build failed: ${error.message}\n`);
         process.exitCode = 1;

@@ -2,9 +2,9 @@
 
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
+import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
 import { resolveRepositoryPath } from "./path-safety.mjs";
 
@@ -112,7 +112,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`Sentry build hook failed: ${error.message}\n`);
         process.exitCode = 1;

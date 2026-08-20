@@ -2,8 +2,8 @@
 
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
+import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
 import { publishRelease } from "./release-publisher.mjs";
 import { readCanonicalVersion } from "./release-publisher.mjs";
@@ -49,7 +49,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`Local release failed: ${error.message}\n`);
         process.exitCode = 1;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
+import { isMainModule } from "./cli-entry.mjs";
 
 const API_BASE = "https://sentry.io/api/0/";
 const OUTPUT_SCHEMA = "sentry-project-provisioner/v1";
@@ -231,7 +231,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`Sentry project provisioning failed: ${error.message}\n`);
         process.exitCode = 1;

@@ -3,8 +3,8 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
+import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig, RELEASE_SCHEMA } from "./config.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { resolveRepositoryPath } from "./path-safety.mjs";
@@ -407,7 +407,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`Release publication failed: ${error.message}\n`);
         process.exitCode = 1;

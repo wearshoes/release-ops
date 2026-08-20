@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
 
+import { isMainModule } from "./cli-entry.mjs";
 import { loadConfig } from "./config.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 import { dispatchWorkflowAndWait } from "./workflow-dispatch.mjs";
@@ -78,7 +78,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`Release dispatch failed: ${error.message}\n`);
         process.exitCode = 1;

@@ -8,6 +8,7 @@ import { resolveRepositoryPath } from "./path-safety.mjs";
 
 const PLUGIN_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CORE_RUNTIME_FILES = [
+    "cli-entry.mjs",
     "config.mjs",
     "provider-registry.mjs",
     "path-safety.mjs",

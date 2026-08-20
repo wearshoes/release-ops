@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
-
+import { isMainModule } from "./cli-entry.mjs";
 import { createGitHubClient } from "./github-client.mjs";
 
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
@@ -173,7 +172,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`GitHub administration failed: ${error.message}\n`);
         process.exitCode = 1;
