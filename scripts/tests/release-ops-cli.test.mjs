@@ -30,7 +30,12 @@ test("inspect CLI exposes required GitHub and provider decisions", async () => {
     const { stdout } = await execFileAsync(process.execPath, [script, "inspect", "--root", root]);
     const result = JSON.parse(stdout);
     assert.equal(result.schemaVersion, "release-ops/inspect/v2");
+    assert.equal(result.decisionCheckpoint.status, "awaiting-user");
+    assert.deepEqual(result.decisionCheckpoint.decisions, ["github", "providerSelection"]);
     assert.equal(result.decisions.providerSelection.required, true);
+    assert.equal(result.decisions.providerSelection.status, "unresolved");
+    assert.equal(result.decisions.providerSelection.source, "current-user");
+    assert.equal(result.decisions.providerSelection.inferenceAllowed, false);
     assert.deepEqual(result.decisions.providerSelection.choices, ["none", "sentry"]);
 });
 

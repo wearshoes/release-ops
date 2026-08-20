@@ -10,11 +10,11 @@
 node <release-ops>/scripts/release-ops.mjs inspect --root <project>
 ```
 
-检查 adapter 候选、版本来源候选、签名文件迹象、产物类型、Git remote、默认分支和已有 workflow。Inspect 不读取签名文件内容，也不会根据 SDK、workflow 或 Secret 自动选择 provider。`config/v1` 会返回 `incompatible/reinitialize`；Unreal 会返回 `ADAPTER_UNSUPPORTED`。
+检查 adapter 候选、版本来源候选、签名文件迹象、产物类型、Git remote、默认分支和已有 workflow。Inspect 不读取签名文件内容，也不会根据 SDK、workflow 或 Secret 自动选择 provider。缺少配置或存在 `config/v1` 时，`decisionCheckpoint.status` 为 `awaiting-user`；必须先询问当前用户的 GitHub 与 provider 选择，再继续迁移分析或生成 plan。`config/v1` 会返回 `incompatible/reinitialize`；Unreal 会返回 `ADAPTER_UNSUPPORTED`。
 
 ## 2. 回答不可发现的决策
 
-每次初始化或重新初始化都必须明确回答：
+每次初始化或重新初始化都必须由当前用户明确回答。旧配置、旧任务、SDK、workflow、runtime、Secret 元数据及 provider 先前的 enabled/disabled 状态都只能作为检查事实，不能继承为本次答案：
 
 1. 是否使用 GitHub。
 2. 使用已有仓库还是创建仓库；只有创建时询问 private/public。

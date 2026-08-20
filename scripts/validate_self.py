@@ -21,15 +21,14 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 
-def validate_manifest() -> None:
+def validate_manifest() -> str:
     path = ROOT / ".codex-plugin" / "plugin.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("name") != "release-ops":
         fail("plugin name must be release-ops")
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", data.get("version", "")):
         fail("plugin version must use semantic versioning")
-    if data.get("version") != "1.0.3":
-        fail("public plugin version must be 1.0.3")
+    version = data.get("version", "")
     if data.get("skills") != "./skills/":
         fail("plugin must expose ./skills/")
     if data.get("repository") != "https://github.com/wearshoes/release-ops":
@@ -38,9 +37,10 @@ def validate_manifest() -> None:
         fail("plugin homepage metadata is invalid")
     if data.get("license") != "MIT":
         fail("plugin license metadata must be MIT")
+    return version
 
 
-def validate_marketplace() -> None:
+def validate_marketplace(version: str) -> None:
     path = ROOT / ".agents" / "plugins" / "marketplace.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("name") != "release-ops":
@@ -56,9 +56,9 @@ def validate_marketplace() -> None:
     if plugin.get("source") != {
         "source": "url",
         "url": "https://github.com/wearshoes/release-ops.git",
-        "ref": "v1.0.3",
+        "ref": f"v{version}",
     }:
-        fail("marketplace must install the immutable v1.0.3 plugin")
+        fail(f"marketplace must install the immutable v{version} plugin")
     if plugin.get("policy") != {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL",
@@ -175,8 +175,8 @@ def validate_catalogs() -> None:
 
 
 def main() -> int:
-    validate_manifest()
-    validate_marketplace()
+    version = validate_manifest()
+    validate_marketplace(version)
     validate_skills()
     validate_files()
     validate_catalogs()

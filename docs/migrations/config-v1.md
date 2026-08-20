@@ -2,8 +2,8 @@
 
 `release-ops/config/v1` 不兼容当前契约，不能原地补字段。迁移必须重新初始化：
 
-1. `inspect` 读取旧配置和项目事实，返回 `incompatible/reinitialize`。
-2. 重新明确 GitHub、仓库 action/visibility、distribution 和 provider selection。
+1. `inspect` 读取旧配置和项目事实，返回 `incompatible/reinitialize`，并以 `decisionCheckpoint.status=awaiting-user` 阻止继续生成迁移结论。
+2. 立即询问当前用户并重新明确 GitHub、仓库 action/visibility、distribution 和 provider selection；即使旧配置明确启用或禁用了 Sentry，也不得继承为 `Sentry` 或 `None`，其它迁移阻塞也不得跳过这个问题。
 3. 把 shell 字符串命令改为 `executable + args`，把单一 build 改为平台 build units。
 4. 把 canonical version 与平台 build numbers 分开，并把 source/distribution 默认分支分别写入。
 5. 生成 plan，核对旧 managed 文件的 update/delete 和 SHA-256，再确认 apply。

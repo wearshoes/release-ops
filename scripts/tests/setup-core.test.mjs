@@ -43,8 +43,59 @@ test("inspect reports version, signing, workflow, and provider decisions without
     assert.equal(inspection.versionSources.some(({ kind, key }) => kind === "build-number" && key === "CODE"), true);
     assert.deepEqual(inspection.signingIndicators, ["keystore.properties"]);
     assert.deepEqual(inspection.workflows, [".github/workflows/existing.yml"]);
-    assert.deepEqual(inspection.decisions.providerSelection, { required: true, choices: ["none", "sentry"] });
+    assert.deepEqual(inspection.decisionCheckpoint, {
+        mode: "initialize",
+        status: "awaiting-user",
+        required: true,
+        requiredBefore: ["setup-plan"],
+        decisions: ["github", "providerSelection"],
+        existingStatePolicy: "evidence-only",
+        inferenceAllowed: false,
+    });
+    assert.deepEqual(inspection.decisions.providerSelection, {
+        required: true,
+        status: "unresolved",
+        source: "current-user",
+        choices: ["none", "sentry"],
+        inferenceAllowed: false,
+    });
     assert.equal(Object.hasOwn(inspection, "selectedProviders"), false);
+});
+
+test("v1 provider state cannot satisfy the current-user reinitialization checkpoint", async () => {
+    const root = await fixtureRoot("release-ops-v1-provider-gate-");
+    await mkdir(join(root, ".release-ops"));
+    await writeFile(join(root, ".release-ops", "config.json"), JSON.stringify({
+        schemaVersion: "release-ops/config/v1",
+        providers: { sentry: { enabled: false } },
+    }), "utf8");
+    const inspection = await inspectProject(root);
+    assert.deepEqual(inspection.config, {
+        status: "incompatible",
+        schemaVersion: "release-ops/config/v1",
+        action: "reinitialize",
+    });
+    assert.equal(inspection.decisionCheckpoint.mode, "reinitialize");
+    assert.equal(inspection.decisionCheckpoint.status, "awaiting-user");
+    assert.equal(inspection.decisionCheckpoint.existingStatePolicy, "evidence-only");
+    assert.equal(inspection.decisions.providerSelection.status, "unresolved");
+    assert.equal(inspection.decisions.providerSelection.source, "current-user");
+    assert.equal(Object.hasOwn(inspection, "selectedProviders"), false);
+});
+
+test("a valid v2 config remains directly auditable without a reinitialization checkpoint", async () => {
+    const root = await fixtureRoot("release-ops-config-audit-gate-");
+    await installProjectFiles(root, baseConfig({ github: false }), { includeConfig: true });
+    const inspection = await inspectProject(root);
+    assert.deepEqual(inspection.decisionCheckpoint, {
+        mode: "configured",
+        status: "not-required-for-audit",
+        required: false,
+        requiredBefore: [],
+        decisions: [],
+        existingStatePolicy: "evidence-only",
+        inferenceAllowed: false,
+    });
 });
 
 test("v1 projects require a confirmed digest before transactional reinitialization", async () => {

@@ -149,11 +149,26 @@ async function configState(root) {
     }
 }
 
+function setupDecisionCheckpoint(config) {
+    const requiresInitialization = config.status !== "valid";
+    const mode = config.status === "missing" ? "initialize" : requiresInitialization ? "reinitialize" : "configured";
+    return {
+        mode,
+        status: requiresInitialization ? "awaiting-user" : "not-required-for-audit",
+        required: requiresInitialization,
+        requiredBefore: requiresInitialization ? ["setup-plan"] : [],
+        decisions: requiresInitialization ? ["github", "providerSelection"] : [],
+        existingStatePolicy: "evidence-only",
+        inferenceAllowed: false,
+    };
+}
+
 export async function inspectProject(root) {
     const paths = await walk(root);
     const adapters = await detectedAdapters(root);
     const unsupported = adapters.filter(({ status }) => status === "unsupported").map(({ id }) => id);
     const repositoryFiles = inspectRepositoryFiles(root, paths);
+    const config = await configState(root);
     return {
         schemaVersion: INSPECT_SCHEMA,
         root: resolve(root),
@@ -168,10 +183,17 @@ export async function inspectProject(root) {
         versionSources: await inspectVersionSources(root),
         signingIndicators: repositoryFiles.signingIndicators,
         workflows: repositoryFiles.workflows,
-        config: await configState(root),
+        config,
+        decisionCheckpoint: setupDecisionCheckpoint(config),
         decisions: {
-            github: { required: true },
-            providerSelection: { required: true, choices: providerChoices() },
+            github: { required: true, status: "unresolved", source: "current-user" },
+            providerSelection: {
+                required: true,
+                status: "unresolved",
+                source: "current-user",
+                choices: providerChoices(),
+                inferenceAllowed: false,
+            },
         },
         installedProviders: Object.values(PROVIDERS).map(({ id, category, capabilities, docs }) => ({ id, category, capabilities, docs })),
     };
