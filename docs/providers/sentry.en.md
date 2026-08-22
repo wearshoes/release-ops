@@ -33,7 +33,7 @@ The checker returns only the platform, [official Sentry platform documentation](
 
 ## 3. Create or Verify the Sentry Project
 
-Use `$sentry-project-provisioner` to verify the exact organization, team, and project slug. Confirm those identities and the Sentry service URL before creating anything. Existing projects are identity-checked only. Do not create a project without authorization for the exact organization, team, and project slug.
+Use `$sentry-project-provisioner` to verify the exact organization, team, and project slug. The organization, team, project slug, and Sentry service selected during setup authorize creation; Codex supplies that slug internally as `--confirm-slug` without asking again. Existing projects are identity-checked only. If those values have not been selected, ask for them before creating anything.
 
 ## 4. Have Codex Obtain the Public DSN Through Chrome
 
@@ -82,7 +82,7 @@ Release/dist and debug artifact upload remain exclusively owned by the Release O
 
 ## 7. Recheck Until `configured`
 
-Run the read-only checker again. Missing dependency, official initialization, or non-placeholder public DSN evidence blocks planning. The plan snapshots redacted evidence and file SHA-256 hashes; apply rejects any evidence drift after digest confirmation. Audit fails with the missing items and official documentation URL if evidence is later removed.
+Run the read-only checker again. Missing dependency, official initialization, or non-placeholder public DSN evidence blocks planning. The plan snapshots redacted evidence and file SHA-256 hashes, and apply rejects evidence drift. When the Sentry project and all other selections remain unchanged, Codex displays a replacement plan and continues automatically. Audit fails with the missing items and official documentation URL if evidence is later removed.
 
 ## 8. Configure Four Credential Roles
 
@@ -93,11 +93,11 @@ Run the read-only checker again. Missing dependency, official initialization, or
 | `SENTRY_AUTH_TOKEN` | Read issue groups and allowlisted event fields | private source scheduled Action |
 | `SENTRY_WRITE_TOKEN` | Write resolved state after explicit commit trailers | private source resolver Action |
 
-Never reuse these roles. Tokens must not enter conversations, source, application packages, logs, Issues, release notes, or artifacts. Only the public DSN may be embedded in the application.
+Never reuse these roles. Tokens must not enter conversations, source, application packages, logs, Issues, release notes, or artifacts. Only the public DSN may be embedded in the application. When writing a GitHub Secret, Codex supplies the selected repository internally as `--confirm-repository`; it does not ask the user to reconfirm each Secret or repository.
 
-## 9. Plan, Confirm, Apply, and Audit
+## 9. Plan, Apply Automatically, and Audit
 
-Release Ops generates a plan only after SDK readiness passes. Review the configuration, processor graph, `extensionChecks`, managed files, Secret names, repository operations, and SHA-256 digest. Apply only after confirming that exact digest.
+Release Ops generates a plan only after SDK readiness passes. Codex first displays the configuration, processor graph, `extensionChecks`, managed files, Secret names, repository operations, and SHA-256 digest. It then immediately supplies `plan.planDigest` as the internal confirmation value and applies the plan without asking the user to copy or reply with the digest. A same-target replan is also displayed and then applied automatically.
 
 Run audit immediately after apply. Success requires configuration, graph, workflow, and SDK evidence consistency, plus verified Secret metadata and remote repository identity.
 

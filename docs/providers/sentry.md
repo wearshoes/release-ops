@@ -33,7 +33,7 @@ node <release-ops-plugin>/scripts/sentry-sdk-check.mjs --root <repository>
 
 ## 3. 创建或核验 Sentry 项目
 
-使用 `$sentry-project-provisioner` 核验准确的组织、团队和项目标识。创建项目前必须确认这些标识与 Sentry 服务地址；已经存在的项目只做身份核验。没有对准确组织、团队和项目标识的创建授权时，不得擅自创建项目。
+使用 `$sentry-project-provisioner` 核验准确的组织、团队和项目标识。用户在 setup 问答中选定的组织、团队、项目标识和 Sentry 服务地址就是创建授权；Codex 会把该项目标识作为内部 `--confirm-slug` 值，不再重复提问。已经存在的项目只做身份核验。尚未选定这些值时必须先询问，不得擅自创建项目。
 
 ## 4. 由 Codex 通过 Chrome 获取公开 DSN
 
@@ -82,7 +82,7 @@ Sentry Agent 没有对应 reference 时，Codex 只读取检查结果中的 `doc
 
 ## 7. 重新检查到 `configured`
 
-再次运行只读检查器。依赖、官方初始化或非占位公开 DSN 任一缺失，计划都会失败。计划会保存脱敏证据和文件 SHA-256；确认摘要后若证据文件变化，应用会拒绝执行。应用后删除任何一类证据，审计也会失败并返回缺失项和官方文档链接。
+再次运行只读检查器。依赖、官方初始化或非占位公开 DSN 任一缺失，计划都会失败。计划会保存脱敏证据和文件 SHA-256；应用前若证据文件变化，当前计划会被拒绝。同一 Sentry 项目和其他选择不变时，Codex 会展示重新生成的计划并自动继续。应用后删除任何一类证据，审计也会失败并返回缺失项和官方文档链接。
 
 ## 8. 配置四类凭据
 
@@ -93,11 +93,11 @@ Sentry Agent 没有对应 reference 时，Codex 只读取检查结果中的 `doc
 | `SENTRY_AUTH_TOKEN` | 读取事故分组和白名单事件字段 | private source 定时 Action |
 | `SENTRY_WRITE_TOKEN` | 显式 trailer 触发 resolved 回写 | private source resolver Action |
 
-四个角色不得复用。令牌不得进入对话、源码、应用包、日志、Issue、发布说明或产物；应用只允许包含公开 DSN。
+四个角色不得复用。令牌不得进入对话、源码、应用包、日志、Issue、发布说明或产物；应用只允许包含公开 DSN。写入 GitHub Secret 时，Codex 使用已选仓库作为内部 `--confirm-repository` 值，不逐个要求用户再次确认 Secret 或仓库。
 
-## 9. 计划、确认、应用和审计
+## 9. 计划、自动应用和审计
 
-SDK 检查通过后，Release Ops 才生成完整计划。审阅配置、处理器图、`extensionChecks`、受管文件、机密变量名称、仓库操作和 SHA-256 摘要，逐字确认实际摘要后才能应用。
+SDK 检查通过后，Release Ops 才生成完整计划。Codex 先展示配置、处理器图、`extensionChecks`、受管文件、机密变量名称、仓库操作和 SHA-256 摘要，再立即把 `plan.planDigest` 作为内部确认值应用，不要求用户复制或回复摘要。同一用户选择和远端目标下重新计划时，也会展示新计划后自动继续。
 
 应用完成后立即运行审计。成功要求配置、处理器图、工作流和 SDK 证据一致，所需机密变量元数据与远端仓库身份也通过核验。
 

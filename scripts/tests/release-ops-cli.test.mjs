@@ -40,3 +40,26 @@ test("CLI plan requires --mode and emits a stable v1 digest", async () => {
     assert.match(plan.planDigest, /^[0-9a-f]{64}$/u);
     assert.equal(plan.config.schemaVersion, "release-ops/config/v1");
 });
+
+test("CLI apply requires the current plan digest even when Codex supplies it internally", async () => {
+    const root = await fixtureRoot("release-ops-cli-apply-");
+    const answersPath = join(root, "answers.json");
+    const planPath = join(root, "plan.json");
+    await writeFile(answersPath, JSON.stringify(answersFor(baseConfig())), "utf8");
+    const planned = run(["plan", "--root", root, "--mode", "initialize", "--answers", answersPath]);
+    assert.equal(planned.status, 0, planned.stderr);
+    const plan = JSON.parse(planned.stdout);
+    await writeFile(planPath, JSON.stringify(plan), "utf8");
+
+    const missing = run(["apply", "--plan", planPath]);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /--confirm is required/u);
+
+    const wrong = run(["apply", "--plan", planPath, "--confirm", "0".repeat(64)]);
+    assert.notEqual(wrong.status, 0);
+    assert.match(wrong.stderr, /exactly match/u);
+
+    const exact = run(["apply", "--plan", planPath, "--confirm", plan.planDigest]);
+    assert.equal(exact.status, 0, exact.stderr);
+    assert.equal(JSON.parse(exact.stdout).managedFiles.schemaVersion, "release-ops/managed-files/v1");
+});

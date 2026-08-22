@@ -106,3 +106,36 @@ test("README manifest generation is stable with LF and CRLF checkouts", async ()
         assert.equal(await renderReadme(crlf, locale), crlf);
     }
 });
+
+test("setup guidance displays plans while keeping confirmations as internal exact-match guards", async () => {
+    const activeGuidance = [
+        "README.md",
+        "README.en.md",
+        "docs/getting-started.md",
+        "docs/getting-started.en.md",
+        "docs/providers/sentry.md",
+        "docs/providers/sentry.en.md",
+        "skills/release-ops-setup/SKILL.md",
+        "skills/sentry-project-provisioner/SKILL.md",
+    ];
+    const sources = new Map(await Promise.all(activeGuidance.map(async (path) =>
+        [path, await readFile(join(ROOT, path), "utf8")])),
+    );
+    for (const [path, source] of sources) {
+        assert.doesNotMatch(source, /reply with (?:the )?(?:complete|exact) digest|把显示的完整摘要原样回复|逐字确认实际摘要|waits? for exact digest confirmation/iu, path);
+    }
+
+    for (const path of ["README.md", "docs/getting-started.md", "docs/providers/sentry.md"]) {
+        assert.match(sources.get(path), /展示[\s\S]{0,240}(?:内部确认值|内部 `--confirm` 值)[\s\S]{0,160}(?:应用|自动继续)/u, path);
+    }
+    for (const path of ["README.en.md", "docs/getting-started.en.md", "docs/providers/sentry.en.md"]) {
+        assert.match(sources.get(path), /display[\s\S]{0,240}internal (?:confirmation|`--confirm`) value[\s\S]{0,160}appl/iu, path);
+    }
+
+    const setupSkill = sources.get("skills/release-ops-setup/SKILL.md");
+    assert.match(setupSkill, /--confirm <plan\.planDigest>/u);
+    assert.match(setupSkill, /same-target replan/u);
+    const sentrySkill = sources.get("skills/sentry-project-provisioner/SKILL.md");
+    assert.match(sentrySkill, /--confirm-slug/u);
+    assert.match(sentrySkill, /--confirm-repository/u);
+});

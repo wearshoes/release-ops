@@ -48,7 +48,7 @@ release-ops init
 
 The Plugin inspects the project and asks, in order, about stacks and build units, signing, publication, GitHub repository layout, and optional services. It then presents the complete plan: managed file additions, updates and deletions, the processor graph, Secret names, repository operations, and the SHA-256 digest.
 
-The Plugin does not apply anything until you confirm the exact digest. After applying, it audits the configuration, workflows, runtime, and remote repository identity. Initialization creates release capability; it does not change the application version or create a Release.
+The current initialization request authorizes that plan. After displaying it, Codex immediately supplies the plan digest as an internal confirmation value, applies it, and audits the configuration, workflows, runtime, and remote repository identity. You do not need to copy or reply with the digest. If file drift or a processor fix changes the plan without changing any user selection or remote target, Codex displays the replacement plan and continues automatically; it asks again only when a selection or target changes. Initialization creates release capability; it does not change the application version or create a Release.
 
 Common follow-up prompts:
 
