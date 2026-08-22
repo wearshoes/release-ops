@@ -60,6 +60,32 @@ test("repository reads reject traversal and symlink escapes", async (context) =>
     await assert.rejects(api.readText("linked/secret.txt"), /symlink boundary/u);
 });
 
+test("repository listing is stable, bounded, and ignores generated directories and symlinks", async (context) => {
+    const root = await mkdtemp(join(tmpdir(), "release-ops-api-list-"));
+    const outside = await mkdtemp(join(tmpdir(), "release-ops-api-list-outside-"));
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "build"));
+    await mkdir(join(root, "node_modules"));
+    await writeFile(join(root, "z.txt"), "z", "utf8");
+    await writeFile(join(root, "src", "a.txt"), "evidence", "utf8");
+    await writeFile(join(root, "build", "ignored.txt"), "ignored", "utf8");
+    await writeFile(join(root, "node_modules", "ignored.txt"), "ignored", "utf8");
+    await writeFile(join(outside, "outside.txt"), "outside", "utf8");
+    try {
+        await symlink(outside, join(root, "linked"), "junction");
+    } catch (error) {
+        context.diagnostic(`junction creation unavailable: ${error.code}`);
+    }
+    const api = createKernelApi({ root, node: node() });
+    const files = await api.listFiles();
+    assert.deepEqual(files, [
+        { path: "src/a.txt", size: 8 },
+        { path: "z.txt", size: 1 },
+    ]);
+    assert.equal(Object.isFrozen(files), true);
+    assert.equal(await api.hashFile("src/a.txt"), "ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e");
+});
+
 test("HTTPS access is exact-origin and credentials can only come from declared roles", async () => {
     const calls = [];
     const api = createKernelApi({

@@ -4,7 +4,7 @@
   "title": "Release Ops setup plan",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "mode", "root", "inspection", "config", "graph", "repositories", "requiredSecrets", "managedFiles", "planDigest"],
+  "required": ["schemaVersion", "mode", "root", "inspection", "config", "graph", "extensionChecks", "repositories", "requiredSecrets", "managedFiles", "planDigest"],
   "properties": {
     "schemaVersion": { "const": "release-ops/setup-plan/v1" },
     "mode": { "enum": ["initialize", "reconfigure", "reinitialize"] },
@@ -12,6 +12,10 @@
     "inspection": { "$ref": "inspect.schema.json" },
     "config": { "$ref": "config.schema.json" },
     "graph": { "$ref": "processor-graph.schema.json" },
+    "extensionChecks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/extensionCheck" }
+    },
     "repositories": {
       "type": "array",
       "items": {
@@ -60,6 +64,59 @@
   },
   "$defs": {
     "nodeId": { "type": "string", "pattern": "^[a-z0-9-]+:[a-z0-9-]+$" },
+    "extensionCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "instanceId", "checkId", "status", "candidates", "platform", "docsUrl", "installer", "missing", "evidence"],
+      "properties": {
+        "schemaVersion": { "type": "string", "pattern": "^release-ops/internal/[a-z0-9-]+/v[1-9][0-9]*$" },
+        "instanceId": { "$ref": "config.schema.json#/$defs/id" },
+        "checkId": { "$ref": "config.schema.json#/$defs/id" },
+        "status": { "enum": ["missing", "partial", "configured", "ambiguous", "unsupported"] },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["instanceId", "extensionId"],
+            "properties": {
+              "instanceId": { "$ref": "config.schema.json#/$defs/id" },
+              "extensionId": { "$ref": "config.schema.json#/$defs/id" }
+            }
+          }
+        },
+        "platform": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "docsUrl": { "type": "string", "pattern": "^https://docs\\.sentry\\.io/platforms/" },
+        "installer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "integration"],
+          "properties": {
+            "method": { "enum": ["wizard", "agent", "manual", "none"] },
+            "integration": {
+              "oneOf": [
+                { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,63}$" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "missing": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "path", "sha256"],
+            "properties": {
+              "type": { "enum": ["sdk", "initialization", "dsn"] },
+              "path": { "$ref": "processor.schema.json#/$defs/path" },
+              "sha256": { "$ref": "processor-graph.schema.json#/$defs/hash" }
+            }
+          }
+        }
+      }
+    },
     "nullableHash": {
       "oneOf": [
         { "$ref": "processor-graph.schema.json#/$defs/hash" },

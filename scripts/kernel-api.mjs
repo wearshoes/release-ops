@@ -1,9 +1,19 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileDefault = promisify(execFileCallback);
+const LIST_MAX_DEPTH = 12;
+const LIST_MAX_FILES = 20_000;
+const LIST_MAX_FILE_SIZE = 1024 * 1024;
+const SKIPPED_DIRECTORIES = new Set([
+    ".build", ".cache", ".codegraph", ".dart_tool", ".expo", ".git", ".gradle", ".idea", ".next",
+    ".nuxt", ".pnpm", ".pytest_cache", ".release-ops", ".svelte-kit", ".turbo", ".venv", ".vs",
+    ".vscode", ".yarn", "__pycache__", "bin", "build", "coverage", "deriveddata", "dist", "library",
+    "node_modules", "obj", "out", "pods", "target", "temp", "tmp", "vendor", "venv",
+]);
 
 function frozen(value) {
     if (Array.isArray(value)) value.forEach(frozen);
@@ -37,6 +47,42 @@ async function safeReadPath(root, relativePath) {
         throw new Error("Repository read path crosses a symlink boundary");
     }
     return targetReal;
+}
+
+function comparePath(left, right) {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function listRepositoryFiles(root) {
+    const rootReal = await realpath(root);
+    const files = [];
+    let visitedFiles = 0;
+    async function visit(directory, depth) {
+        const entries = await readdir(directory, { withFileTypes: true });
+        entries.sort((left, right) => comparePath(left.name, right.name));
+        for (const entry of entries) {
+            if (entry.isSymbolicLink()) continue;
+            const path = resolve(directory, entry.name);
+            if (entry.isDirectory()) {
+                if (depth < LIST_MAX_DEPTH && !SKIPPED_DIRECTORIES.has(entry.name.toLowerCase())) {
+                    await visit(path, depth + 1);
+                }
+                continue;
+            }
+            if (!entry.isFile()) continue;
+            visitedFiles += 1;
+            if (visitedFiles > LIST_MAX_FILES) throw new Error(`Repository file scan exceeds ${LIST_MAX_FILES} files`);
+            const metadata = await lstat(path);
+            if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > LIST_MAX_FILE_SIZE) continue;
+            const repositoryPath = relative(rootReal, path).replaceAll("\\", "/");
+            if (!repositoryPath || repositoryPath.startsWith("../") || isAbsolute(repositoryPath)) {
+                throw new Error("Repository file scan escaped the root");
+            }
+            files.push({ path: repositoryPath, size: metadata.size });
+        }
+    }
+    await visit(rootReal, 0);
+    return files.sort((left, right) => comparePath(left.path, right.path));
 }
 
 function isInside(root, target) {
@@ -102,6 +148,13 @@ export function createKernelApi({
         },
         async readJson(path) {
             return JSON.parse(await api.readText(path));
+        },
+        async listFiles() {
+            return frozen(await listRepositoryFiles(root));
+        },
+        async hashFile(path) {
+            const bytes = await readFile(await safeReadPath(root, path));
+            return createHash("sha256").update(bytes).digest("hex");
         },
         async exists(path) {
             try {

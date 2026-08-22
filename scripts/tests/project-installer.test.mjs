@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { applySetupPlan, createSetupPlan } from "../setup-core.mjs";
 import { executeNode } from "../execute.mjs";
-import { answersFor, baseConfig, fixtureRoot } from "./fixtures.mjs";
+import { addAndroidSentrySdk, answersFor, baseConfig, fixtureRoot } from "./fixtures.mjs";
 
 function hash(value) {
     return createHash("sha256").update(value).digest("hex");
@@ -47,10 +47,12 @@ test("apply copies only selected extension runtime and writes v1 digests", async
 
 test("reconfigure deletes disabled extension runtime without retaining unselected stacks", async () => {
     const root = await fixtureRoot("release-ops-disable-");
-    const enabled = baseConfig({ sentry: true });
+    await addAndroidSentrySdk(root);
+    const enabled = baseConfig({ sentry: true, stack: "android" });
     enabled.extensions.at(-1).config.issueSync = false;
     const initial = await createSetupPlan(root, answersFor(enabled), { token: null });
     await applySetupPlan(initial, initial.planDigest, { token: null });
+    await access(join(root, ".release-ops", "runtime", "extensions", "sentry", "scripts", "processors", "sentry-sdk-check.mjs"));
     const next = await createSetupPlan(root, answersFor(baseConfig(), "reconfigure"), { token: null });
     assert.equal(next.managedFiles.operations.some(({ path, operation }) =>
         path.includes("runtime/extensions/sentry/") && operation === "delete"), true);

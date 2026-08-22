@@ -60,6 +60,12 @@ release-ops reinitialize
 
 See [Installation, initialization, and audit](docs/getting-started.en.md) for the complete workflow.
 
+## Sentry Onboarding
+
+When Sentry is selected, Release Ops first checks the application SDK for the stack that owns the final published artifacts in the processor graph. Planning requires dependency, official initialization, and non-placeholder public DSN evidence. It never chooses arbitrarily when final artifact ownership is ambiguous.
+
+If SDK setup is incomplete, Codex verifies the Sentry project and uses the Chrome control plugin to read the public DSN from the user's signed-in Sentry project page; the user does not have to locate or paste it. Codex then uses the supported official Wizard, a constrained Sentry Agent flow, or the matching official platform guide. Release/dist, source maps, mappings, and other debug artifact uploads remain owned by Release Ops to prevent duplicate configuration. See [Sentry onboarding](docs/providers/sentry.en.md) for the full procedure.
+
 ## Generated State
 
 - `.release-ops/config.json`: the project name and selected extension instances;
@@ -92,7 +98,7 @@ This matrix is generated deterministically from `extensions/**/extension.json`:
 <!-- EXTENSION_MATRIX_START -->
 | Type | Extension | Status | Targets |
 | --- | --- | --- | --- |
-| provider | [sentry](docs/providers/sentry.md) | supported | - |
+| provider | [sentry](docs/providers/sentry.en.md) | supported | - |
 | release | [github](docs/workflows/github-release.md) | supported | - |
 | release | [local](docs/workflows/local-release.md) | supported | - |
 | signing | [android-keystore](docs/signing/android-keystore.md) | supported | - |

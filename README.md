@@ -60,6 +60,12 @@ release-ops reinitialize
 
 完整说明见[安装、初始化与审计](docs/getting-started.md)。
 
+## Sentry 接入
+
+初始化时选择 Sentry 后，Release Ops 会先根据处理器图，找到最终发布产物所属的技术栈实例并检查应用 SDK。只有依赖、官方初始化和非占位公开 DSN 三类证据完整时才允许生成计划；检测到多个最终产物归属时不会擅自选择。
+
+SDK 缺失时，Codex 先核验 Sentry 项目，并通过 Chrome 控制插件从用户已登录的 Sentry 项目页读取公开 DSN；用户不需要手工查找或粘贴 DSN。随后 Codex 依次使用支持当前平台的官方 Wizard、受限的 Sentry Agent 或对应的官方平台手册。版本与分发标识、源码映射、混淆映射和其他调试产物上传仍由 Release Ops 管理，避免安装器重复配置。完整步骤见 [Sentry 接入](docs/providers/sentry.md)。
+
 ## 生成内容
 
 - `.release-ops/config.json`：项目名和已选择的扩展实例；

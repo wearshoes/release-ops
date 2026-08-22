@@ -5,6 +5,17 @@ import { join } from "node:path";
 import { CONFIG_SCHEMA, RELEASE_SCHEMA } from "../config.mjs";
 
 function stackConfig({ extensionId = "generic", requiredSecretRoles = [] } = {}) {
+    const hosted = {
+        android: ["android", "ubuntu-latest"],
+        apple: ["ios", "macos-latest"],
+        dotnet: ["windows", "windows-latest"],
+        flutter: ["android", "ubuntu-latest"],
+        godot: ["windows", "windows-latest"],
+        javascript: ["web", "ubuntu-latest"],
+        native: ["windows", "windows-latest"],
+        "react-native": ["android", "ubuntu-latest"],
+        unity: ["windows", "windows-latest"],
+    }[extensionId] ?? ["windows", "windows-latest"];
     return {
         instanceId: "application",
         extensionId,
@@ -13,8 +24,8 @@ function stackConfig({ extensionId = "generic", requiredSecretRoles = [] } = {})
             root: ".",
             buildUnits: [{
                 id: "desktop",
-                target: "windows",
-                runner: "windows-latest",
+                target: hosted[0],
+                runner: hosted[1],
                 command: { executable: "node", args: ["-e", "process.exit(0)"] },
                 requiredSecretRoles,
                 artifacts: [{
@@ -168,6 +179,26 @@ export async function fixtureRoot(prefix = "release-ops-contract-") {
     await writeFile(join(root, "docs", "v1.2.3.md"), "Release notes\n", "utf8");
     await writeFile(join(root, "docs", "public.md"), "# Public downloads\n", "utf8");
     return root;
+}
+
+export async function addAndroidSentrySdk(root) {
+    await mkdir(join(root, "app", "src", "main"), { recursive: true });
+    await writeFile(join(root, "app", "build.gradle.kts"), [
+        "plugins { id(\"io.sentry.android.gradle\") version \"5.0.0\" }",
+        "",
+    ].join("\n"), "utf8");
+    await writeFile(join(root, "app", "src", "main", "AndroidManifest.xml"), [
+        "<manifest><application>",
+        "  <meta-data android:name=\"io.sentry.dsn\" android:value=\"${SENTRY_DSN}\" />",
+        "</application></manifest>",
+        "",
+    ].join("\n"), "utf8");
+    await writeFile(join(root, "gradle.properties"), [
+        "VERSION=1.2.3",
+        "CODE=9",
+        "SENTRY_DSN=https://abcdef12@o1.ingest.sentry.io/123",
+        "",
+    ].join("\n"), "utf8");
 }
 
 export const SOURCE_SHA = "b".repeat(40);

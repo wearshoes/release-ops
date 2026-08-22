@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { isMainModule } from "./cli-entry.mjs";
@@ -33,8 +33,20 @@ function label(status, locale) {
     return labels[status] ?? labels.diagnostic;
 }
 
-function link(manifest) {
-    return `[${manifest.id}](${manifest.docs})`;
+async function localizedDocs(manifest, locale) {
+    if (locale !== "en") return manifest.docs;
+    const candidate = manifest.docs.replace(/\.md$/u, ".en.md");
+    try {
+        await access(resolve(PLUGIN_ROOT, candidate));
+        return candidate;
+    } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        return manifest.docs;
+    }
+}
+
+async function link(manifest, locale) {
+    return `[${manifest.id}](${await localizedDocs(manifest, locale)})`;
 }
 
 function targets(manifest) {
@@ -46,11 +58,13 @@ export async function extensionMatrix(locale = "en", eol = "\n") {
     const catalog = await loadExtensionCatalog();
     const labels = language(locale);
     const rows = Object.values(catalog).sort((left, right) => left.type.localeCompare(right.type) || left.id.localeCompare(right.id));
+    const renderedRows = await Promise.all(rows.map(async (manifest) =>
+        `| ${labels.types[manifest.type]} | ${await link(manifest, locale)} | ${label(manifest.status, locale)} | ${targets(manifest)} |`));
     return [
         START,
         `| ${labels.headers.join(" | ")} |`,
         "| --- | --- | --- | --- |",
-        ...rows.map((manifest) => `| ${labels.types[manifest.type]} | ${link(manifest)} | ${label(manifest.status, locale)} | ${targets(manifest)} |`),
+        ...renderedRows,
         END,
     ].join(eol);
 }

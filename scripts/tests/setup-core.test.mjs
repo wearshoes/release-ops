@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { applySetupPlan, auditProject, createSetupPlan, inspectProject, routeSetup } from "../setup-core.mjs";
-import { answersFor, baseConfig, fixtureRoot } from "./fixtures.mjs";
+import { addAndroidSentrySdk, answersFor, baseConfig, fixtureRoot } from "./fixtures.mjs";
 
 function decisions() {
     return [
@@ -83,7 +83,8 @@ test("plan digest is deterministic and apply requires the exact digest", async (
 
 test("GitHub and Sentry plan freezes repository identities and Secret roles", async () => {
     const root = await fixtureRoot("release-ops-remote-plan-");
-    const config = baseConfig({ mode: "dual-repository", sentry: true, signing: true });
+    await addAndroidSentrySdk(root);
+    const config = baseConfig({ mode: "dual-repository", sentry: true, signing: true, stack: "android" });
     const plan = await createSetupPlan(root, answersFor(config, "initialize", decisions()), {
         token: "metadata", github: fakeGitHub(),
     });
@@ -97,6 +98,58 @@ test("GitHub and Sentry plan freezes repository identities and Secret roles", as
     assert.equal(roles.includes("sentry:build-upload"), true);
     assert.equal(roles.includes("sentry:incident-read"), true);
     assert.equal(roles.includes("sentry:incident-write"), true);
+    assert.equal(plan.extensionChecks[0].status, "configured");
+    assert.equal(plan.extensionChecks[0].platform, "android");
+});
+
+test("Sentry SDK readiness is a hard plan gate", async () => {
+    const root = await fixtureRoot("release-ops-sentry-plan-gate-");
+    const config = baseConfig({ sentry: true, stack: "android" });
+    config.extensions.at(-1).config.issueSync = false;
+    await assert.rejects(
+        createSetupPlan(root, answersFor(config), { token: null }),
+        /sentry:sentry-sdk is missing; missing sdk, initialization, dsn; https:\/\/docs\.sentry\.io\/platforms\/android\//u,
+    );
+});
+
+test("apply rejects Sentry SDK evidence drift after digest confirmation", async () => {
+    const root = await fixtureRoot("release-ops-sentry-check-drift-");
+    await addAndroidSentrySdk(root);
+    const config = baseConfig({ sentry: true, stack: "android" });
+    config.extensions.at(-1).config.issueSync = false;
+    const plan = await createSetupPlan(root, answersFor(config), { token: null });
+    await writeFile(join(root, "gradle.properties"), [
+        "VERSION=1.2.3",
+        "CODE=9",
+        "SENTRY_DSN=https://fedcba98@o1.ingest.sentry.io/123",
+        "",
+    ].join("\n"), "utf8");
+    await assert.rejects(
+        applySetupPlan(plan, plan.planDigest, { token: null }),
+        /Extension check evidence changed after the confirmed plan/u,
+    );
+});
+
+test("audit fails with official remediation when an installed Sentry SDK loses initialization", async () => {
+    const root = await fixtureRoot("release-ops-sentry-audit-sdk-");
+    await addAndroidSentrySdk(root);
+    const config = baseConfig({ sentry: true, stack: "android" });
+    config.extensions.at(-1).config.issueSync = false;
+    const plan = await createSetupPlan(root, answersFor(config), { token: null });
+    await applySetupPlan(plan, plan.planDigest, { token: null });
+    await writeFile(join(root, "app", "src", "main", "AndroidManifest.xml"), "<manifest><application /></manifest>\n", "utf8");
+    const audit = await auditProject(root, {
+        token: null,
+        env: {
+            SENTRY_ORG_CI_TOKEN: "configured",
+            SENTRY_AUTH_TOKEN: "configured",
+            SENTRY_WRITE_TOKEN: "configured",
+        },
+    });
+    assert.equal(audit.success, false);
+    assert.equal(audit.extensions.sentry.status, "fail");
+    assert.match(audit.extensions.sentry.message, /missing initialization/u);
+    assert.match(audit.extensions.sentry.message, /https:\/\/docs\.sentry\.io\/platforms\/android\//u);
 });
 
 test("audit reports config, graph, and workflow drift after manual config edits", async () => {

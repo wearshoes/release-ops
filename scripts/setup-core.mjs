@@ -377,6 +377,20 @@ async function runProcessorNodes(root, config, graph, registry, entrypoint) {
     return { workflows, managedFiles, results };
 }
 
+function extensionChecks(results) {
+    return Object.values(results).flatMap((result) => result?.extensionCheck ? [result.extensionCheck] : [])
+        .sort((left, right) => left.instanceId.localeCompare(right.instanceId) || left.checkId.localeCompare(right.checkId));
+}
+
+function requirePassingExtensionChecks(checks) {
+    const failed = checks.filter(({ status }) => status !== "configured");
+    if (!failed.length) return;
+    throw new Error(`Extension checks failed: ${failed.map((check) => {
+        const missing = check.missing.length ? `; missing ${check.missing.join(", ")}` : "";
+        return `${check.instanceId}:${check.checkId} is ${check.status}${missing}; ${check.docsUrl}`;
+    }).join(" | ")}`);
+}
+
 function requiredSecrets(config, graph) {
     const byRole = new Map();
     for (const node of graph.nodes) {
@@ -435,6 +449,8 @@ export async function createSetupPlan(root, answers, {
     const config = await validateConfig(configFromAnswers(answers), { extensions: registry });
     const graph = await createProcessorGraph(config, registry);
     const contributions = await runProcessorNodes(resolve(root), config, graph, registry, "setup");
+    const checks = extensionChecks(contributions.results);
+    requirePassingExtensionChecks(checks);
     const repositories = await planRepositories(config, registry, answers.repositories, token, github);
     const managed = await planProjectFiles(resolve(root), config, graph, registry, contributions.workflows, {
         adoptions: answers.managedFileAdoptions,
@@ -450,6 +466,7 @@ export async function createSetupPlan(root, answers, {
         inspection,
         config,
         graph,
+        extensionChecks: checks,
         repositories,
         requiredSecrets: requiredSecrets(config, graph),
         managedFiles: publicManagedPlan(managed),
@@ -508,6 +525,11 @@ export async function applySetupPlan(plan, confirmation, {
     const graph = await createProcessorGraph(config, registry);
     if (stableJson(graph) !== stableJson(plan.graph)) throw new Error("Extension code or processor graph changed after planning");
     const contributions = await runProcessorNodes(root, config, graph, registry, "setup");
+    const checks = extensionChecks(contributions.results);
+    requirePassingExtensionChecks(checks);
+    if (stableJson(checks) !== stableJson(plan.extensionChecks)) {
+        throw new Error("Extension check evidence changed after the confirmed plan");
+    }
     const preflight = await planProjectFiles(root, config, graph, registry, contributions.workflows, {
         adoptions: plan.managedFiles.adoptions,
         contributions: contributions.managedFiles,
@@ -653,8 +675,9 @@ export async function auditProject(root, {
         for (const instance of config.extensions) {
             const nodes = graph.nodes.filter((node) => node.instanceId === instance.instanceId && node.stage === "audit");
             const results = nodes.map((node) => audit.results[node.id]).filter(Boolean);
-            extensions[instance.instanceId] = results.some(({ status }) => status === "fail")
-                ? { status: "fail", message: "Extension audit failed" }
+            const failure = results.find(({ status }) => status === "fail");
+            extensions[instance.instanceId] = failure
+                ? { status: "fail", message: failure.message ?? "Extension audit failed" }
                 : { status: results.length ? "configured" : "not-applicable" };
         }
     } catch (error) {

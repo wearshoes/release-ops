@@ -1,49 +1,106 @@
-# Sentry Provider SOP
+# Sentry 接入
 
-## 选择与能力
+**中文** | [English](sentry.en.md)
 
-用户选择一次 Sentry 即授权 setup 配置其已实现能力。GitHub 同时启用时生成完整 Issue 闭环；GitHub 未启用时只配置 SDK、release/dist 和调试符号上传。检测到现有 SDK、DSN、Token 或 workflow 都不会自动选择 Sentry。
+Release Ops 的 Sentry 扩展负责版本与分发标识、调试符号上传、定时事故接入和显式状态回写。应用 SDK 与公开 DSN 必须先在项目源码中完成接入；Release Ops 不会把 DSN、令牌或扫描状态写进自己的配置。
 
-能力包括 `configure`、`audit`、`requiredSecrets`、`buildHooks`、`scheduledIngest`、`incidentIntake` 和 `resolve`。
+## 1. 选择 Sentry 并确认目标技术栈
 
-## 四类凭据
+在初始化或重新配置时明确选择 Sentry。Release Ops 从处理器图中查找最终发布产物所属的技术栈实例，不使用项目检测阶段的候选列表代替配置决定。
 
-| Secret | 职责 | 位置 |
+如果所有发布产物属于同一个技术栈实例，就检查该实例对应的平台。若存在多个不同的最终产物归属且无法唯一确定，计划会停止，要求先拆分或明确 SDK 目标。
+
+## 2. 运行只读 SDK 检查
+
+Codex 会在 plan 前运行内部检查器。下面是 agent 使用的内部命令，普通用户不需要手工执行：
+
+```powershell
+node <release-ops-plugin>/scripts/sentry-sdk-check.mjs --root <repository> --answers <setup-answers.json>
+```
+
+已经应用 Release Ops 后，可以省略 answers：
+
+```powershell
+node <release-ops-plugin>/scripts/sentry-sdk-check.mjs --root <repository>
+```
+
+检查器只返回平台、[Sentry 官方平台文档](https://docs.sentry.io/platforms/)、建议安装方式、缺失项，以及依赖、初始化和 DSN 证据文件的路径与 SHA-256。它不会返回 DSN、令牌或匹配文本。
+
+- `configured`：三类证据完整，跳过安装器；
+- `missing` 或 `partial`：先完成下面的 SDK 接入；
+- `ambiguous`：最终产物归属不唯一，不能继续生成计划；
+- `unsupported`：当前技术栈没有可安全自动核验的 SDK 路径，按诊断处理。
+
+## 3. 创建或核验 Sentry 项目
+
+使用 `$sentry-project-provisioner` 核验准确的组织、团队和项目标识。创建项目前必须确认这些标识与 Sentry 服务地址；已经存在的项目只做身份核验。没有对准确组织、团队和项目标识的创建授权时，不得擅自创建项目。
+
+## 4. 由 Codex 通过 Chrome 获取公开 DSN
+
+公开 DSN 由 Codex 主动获取，不把控制台操作步骤交给用户：
+
+1. Codex 调用 `chrome:control-chrome`，连接用户现有的 Chrome 登录态。不得改用另一个浏览器，也不得读取 Cookie、local storage、密码或浏览器会话文件。
+2. 从已核验的 Sentry 服务入口进入组织设置，依次打开准确的组织、项目和 `Client Keys (DSN)` 页面。不得通过搜索结果或相似名称猜测项目。
+3. 读取页面中明确标为 `DSN` 或 `Public DSN` 的公开客户端 DSN，并在读取前再次核对页面显示的组织与 project slug。DSN 必须使用 HTTPS、不是占位值，且不得包含密码、查询参数或片段。
+4. 不在对话、进度消息、截图、日志或计划中显示 DSN；直接把它用于应用 SDK 配置。不得读取或复用页面上的认证令牌，也不得把 DSN 写入 Release Ops `config/v1`。
+
+Chrome 控制插件未连接时，Codex 暂停并要求用户连接插件；Sentry 未登录时，Codex 暂停并要求用户在同一个 Chrome 中登录，然后从当前步骤继续。Codex 不得要求用户代为查找、复制或粘贴 DSN。
+
+## 5. 安装并初始化应用 SDK
+
+优先使用检查结果给出的方式。
+
+### 官方 Wizard
+
+[Sentry Wizard](https://github.com/getsentry/sentry-wizard) 支持当前平台时，先解析当前版本并固定到精确版本：
+
+```powershell
+npm.cmd view @sentry/wizard version --json
+npx.cmd @sentry/wizard@<exact-version> -i <integration> --org <organization> --project <project> --url <service-url> --disable-telemetry
+```
+
+执行前先展示精确版本和 `git status --short`。不要使用运行时 `@latest`，也不要传 `--ignore-git-changes`。Wizard 失败或被中断后，先检查它已经产生的差异，再决定如何继续，不能直接重复执行。
+
+### Sentry Agent
+
+Wizard 不支持、但 [Sentry Agent Plugin](https://docs.sentry.io/ai/agent-plugin/) 有对应 SDK 参考资料时，使用官方 `sentry-instrument` skill。权限只覆盖当前目标技术栈的 SDK 依赖、推荐初始化和公开 DSN：禁止 Agent 创建项目、制造或验证真实事件、配置版本、源码映射、混淆映射、dSYM 或 DIF 上传、推送代码或发布版本。
+
+### 官方平台手册
+
+Sentry Agent 没有对应 reference 时，Codex 只读取检查结果中的 `docs.sentry.io` 官方平台页，完成最小 SDK 依赖、官方初始化和 public DSN 配置。Unreal 仍只返回不支持诊断，不猜测接入方式。
+
+## 6. 清理安装器副作用
+
+安装后审阅完整工作区差异：
+
+- 保留应用运行时 SDK、初始化和公开 DSN；
+- 删除本次安装生成的本地认证文件或令牌行，不输出其中的值；
+- 禁用安装器添加的自动版本、源码映射、Proguard 混淆映射、dSYM 或 DIF 上传；
+- 保留项目原有与 Sentry 无关的改动。
+
+版本、分发标识与调试产物上传继续只由 Release Ops 的 Sentry 处理器和机密变量角色管理，避免同一次构建重复创建版本或重复上传。
+
+## 7. 重新检查到 `configured`
+
+再次运行只读检查器。依赖、官方初始化或非占位公开 DSN 任一缺失，计划都会失败。计划会保存脱敏证据和文件 SHA-256；确认摘要后若证据文件变化，应用会拒绝执行。应用后删除任何一类证据，审计也会失败并返回缺失项和官方文档链接。
+
+## 8. 配置四类凭据
+
+| Secret | 职责 | 使用位置 |
 | --- | --- | --- |
-| `SENTRY_PROJECT_ADMIN_TOKEN` | 创建/核验项目与读取 public DSN | 本地 provision 步骤 |
-| `SENTRY_ORG_CI_TOKEN` | 上传 mapping、dSYM、source map、PDB/DIF | build/provider step |
-| `SENTRY_AUTH_TOKEN` | 只读分组与白名单事件字段 | private source 定时 Action |
-| `SENTRY_WRITE_TOKEN` | 显式 trailer 触发的 resolved 写入 | private source resolver Action |
+| `SENTRY_PROJECT_ADMIN_TOKEN` | 创建或核验项目 | 仅本地 provision |
+| `SENTRY_ORG_CI_TOKEN` | 上传 mapping、source map、dSYM、PDB、DIF | build/provider step |
+| `SENTRY_AUTH_TOKEN` | 读取事故分组和白名单事件字段 | private source 定时 Action |
+| `SENTRY_WRITE_TOKEN` | 显式 trailer 触发 resolved 回写 | private source resolver Action |
 
-Token 不得复用、打印、写入源码、APK、Issue 或 Artifact。应用只允许内置 public DSN。
+四个角色不得复用。令牌不得进入对话、源码、应用包、日志、Issue、发布说明或产物；应用只允许包含公开 DSN。
 
-## Provision
+## 9. 计划、确认、应用和审计
 
-`$sentry-project-provisioner` 先 inspect/dry-run，再经用户确认创建组织下的具体 project slug。缺少 token 时可由用户手工交接，或在已登录浏览器中创建后加密写入目标 Secret；任何出现在聊天或日志中的 token 都视为泄露。
+SDK 检查通过后，Release Ops 才生成完整计划。审阅配置、处理器图、`extensionChecks`、受管文件、机密变量名称、仓库操作和 SHA-256 摘要，逐字确认实际摘要后才能应用。
 
-## Build hook
+应用完成后立即运行审计。成功要求配置、处理器图、工作流和 SDK 证据一致，所需机密变量元数据与远端仓库身份也通过核验。
 
-Provider 接收可信的 project、完整 source SHA、release、dist、build unit 和本地调试符号路径。R8 mapping 使用 `upload-proguard`，source map 使用 inject/upload，dSYM/PDB/ELF/WASM 等 DIF 使用 `debug-files upload` 的受限类型或自动识别，Dart symbols 映射为 Breakpad；它不执行配置中的任意命令。`apiBase` 支持 Sentry SaaS 和兼容的自托管 HTTPS `/api/0`。
+## 10. 可选真实事件验证
 
-`releaseTemplate` 与 `distTemplate` 可引用 `version`、各 build number id、`sourceSha`、项目名
-`project`，以及已确认的 stack 标量标识，例如 Android 的 `applicationId`。不存在的变量会让
-build hook 失败，不会降级成空字符串。启用 GitHub 时生成发布 workflow；同时启用 issue sync
-时才生成 `sentry-issues.yml` 与 `resolve-issues.yml`，禁用 provider 会事务删除未被人工修改的
-provider runtime 和 workflow。
-
-## Scheduled ingest
-
-同步至少使用 75 分钟重叠窗口，并只跟随同源 `rel=next; results=true` 分页。Issue 内容由固定白名单 schema 构造，禁止原始异常消息、请求、用户、breadcrumb、locals、设备标识和 event JSON。一个 Sentry 分组对应一个 private GitHub Issue；回归重开原 Issue。
-
-## Resolve
-
-默认分支 push 的全部 commit 会先完整预检 `Issues: #...` 与 `Commit-ID: HEAD|<full-sha>`。Resolver 写入可信 start marker，再执行一次 Sentry PUT；响应不确定时不自动重放。只有确认 applied marker 后才评论并关闭 GitHub Issue。
-
-发布与 resolved 独立；Release 成功不能关闭事故。
-
-## Audit 与故障恢复
-
-Audit 分别报告 build upload、scheduled ingest 与 resolver 的配置、Secret 元数据和远端验证；
-任一必需远端未验证时不得报告成功。分页、认证或限流失败必须保留为失败，不能解释为“没有
-Issue”。同步按 marker 幂等更新；resolver 出现只有 start、没有 applied 的不确定写入时停止自动
-重放，由人工核对后再恢复。managed workflow 被人工修改时 setup 整体停止，不覆盖项目改动。
+初始化不自动运行应用、注入崩溃、制造测试事件、调用 Sentry MCP、推送代码或发布版本。需要真实事件验证时，用户必须另行明确授权，并单独约定运行环境与数据边界。

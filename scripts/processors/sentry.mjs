@@ -1,12 +1,14 @@
+import { checkSentrySdk, sentrySdkCheckMessage } from "./sentry-sdk-check.mjs";
+import { resolveIssues, syncIncidents } from "./sentry-lifecycle.mjs";
+
 const ACTIONS = Object.freeze({
     checkout: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
     node: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
 });
 
-import { resolveIssues, syncIncidents } from "./sentry-lifecycle.mjs";
-
-export function planSentryProcessor({ api, instance, config }) {
-    if (!instance.config.issueSync) return { enabled: true, issueSync: false, managedFiles: [] };
+export async function planSentryProcessor({ api, instance, config, graph }) {
+    const extensionCheck = await checkSentrySdk({ api, config, graph, instance });
+    if (!instance.config.issueSync) return { enabled: true, issueSync: false, managedFiles: [], extensionCheck };
     const release = config.extensions.find((candidate) => candidate.config.source?.repository);
     const branch = release?.config.source?.defaultBranch ?? "main";
     const repository = release?.config.source?.repository;
@@ -66,7 +68,13 @@ export function planSentryProcessor({ api, instance, config }) {
     };
     api.addWorkflow({ path: instance.config.workflows.issueFile, model: issueModel });
     api.addWorkflow({ path: instance.config.workflows.resolveFile, model: resolveModel });
-    return { enabled: true, issueSync: true, repository, managedFiles: [instance.config.workflows.issueFile, instance.config.workflows.resolveFile] };
+    return {
+        enabled: true,
+        issueSync: true,
+        repository,
+        managedFiles: [instance.config.workflows.issueFile, instance.config.workflows.resolveFile],
+        extensionCheck,
+    };
 }
 
 function applyTemplate(template, values) {
@@ -166,6 +174,12 @@ export async function resolveProcessor({ api, config, instance, arguments: args 
     return resolveIssues({ api, config, instance, before: args[0], after: args[1] });
 }
 
-export function auditProcessor({ instance }) {
-    return { status: instance.config.lookbackMinutes >= 75 ? "configured" : "fail" };
+export async function auditProcessor({ api, config, graph, instance }) {
+    const extensionCheck = await checkSentrySdk({ api, config, graph, instance });
+    const lifecycleConfigured = instance.config.lookbackMinutes >= 75;
+    return {
+        status: lifecycleConfigured && extensionCheck.status === "configured" ? "configured" : "fail",
+        message: !lifecycleConfigured ? "Sentry ingest lookback must be at least 75 minutes" : sentrySdkCheckMessage(extensionCheck),
+        extensionCheck,
+    };
 }

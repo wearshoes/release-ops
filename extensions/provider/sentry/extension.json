@@ -222,6 +222,7 @@
   ],
   "runtimeFiles": [
     "scripts/processors/sentry.mjs",
+    "scripts/processors/sentry-sdk-check.mjs",
     "scripts/processors/sentry-lifecycle.mjs"
   ]
 }
