@@ -14,7 +14,7 @@ Release Ops is a release workflow plugin for Codex. It asks about the project st
 Run these commands in a terminal:
 
 ```powershell
-codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
+codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.2.0
 codex.cmd plugin add release-ops@release-ops
 ```
 

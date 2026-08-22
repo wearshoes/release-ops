@@ -2,7 +2,7 @@
   "schemaVersion": "release-ops/extension/v1",
   "id": "local",
   "type": "release",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "status": "supported",
   "configSchemaVersion": "release-ops/extension-config/local/v1",
   "configSchema": "assets/extension-schemas/release.schema.json",

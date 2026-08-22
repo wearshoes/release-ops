@@ -9,7 +9,7 @@ Release Ops 通过 Codex 插件使用。普通用户不需要寻找或执行插�
 首次安装时，在终端执行：
 
 ```powershell
-codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
+codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.2.0
 codex.cmd plugin add release-ops@release-ops
 ```
 

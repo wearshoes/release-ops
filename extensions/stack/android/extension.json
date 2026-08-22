@@ -2,7 +2,7 @@
   "schemaVersion": "release-ops/extension/v1",
   "id": "android",
   "type": "stack",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "status": "supported",
   "configSchemaVersion": "release-ops/extension-config/android/v1",
   "configSchema": "assets/extension-schemas/stack.schema.json",

@@ -14,7 +14,7 @@ Release Ops 是面向 Codex 的发布流程插件。它会询问项目技术栈�
 在终端中执行：
 
 ```powershell
-codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
+codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.2.0
 codex.cmd plugin add release-ops@release-ops
 ```
 

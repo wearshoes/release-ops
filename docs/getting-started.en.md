@@ -9,7 +9,7 @@ Release Ops is used through its Codex Plugin. Regular users do not need to find 
 For a first installation, run:
 
 ```powershell
-codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.1.0
+codex.cmd plugin marketplace add wearshoes/release-ops --ref v1.2.0
 codex.cmd plugin add release-ops@release-ops
 ```
 
