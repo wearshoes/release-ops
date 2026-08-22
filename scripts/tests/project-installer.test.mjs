@@ -61,6 +61,24 @@ test("reconfigure deletes disabled extension runtime without retaining unselecte
     assert.deepEqual((await readdir(join(root, ".release-ops", "runtime", "extensions"))).sort(), ["application", "release"]);
 });
 
+test("reinitialize accepts a legacy managed manifest and replaces malformed config", async () => {
+    const root = await fixtureRoot("release-ops-legacy-managed-v1-");
+    await mkdir(join(root, ".release-ops"));
+    await writeFile(join(root, ".release-ops", "config.json"), "{broken", "utf8");
+    await writeFile(join(root, ".release-ops", "managed-files.json"), JSON.stringify({
+        schemaVersion: "release-ops-managed-files/v1",
+        files: {},
+    }), "utf8");
+
+    const plan = await createSetupPlan(root, answersFor(baseConfig(), "reinitialize"), { token: null });
+
+    assert.equal(plan.mode, "reinitialize");
+    assert.equal(plan.managedFiles.conflicts.length, 0);
+    await applySetupPlan(plan, plan.planDigest, { token: null });
+    const installed = JSON.parse(await readFile(join(root, ".release-ops", "config.json"), "utf8"));
+    assert.equal(installed.schemaVersion, "release-ops/config/v1");
+});
+
 test("exact workflow adoption preserves bytes and requires matching owner and SHA-256", async () => {
     const root = await fixtureRoot("release-ops-adopt-");
     const path = join(root, ".github", "workflows", "publish-release.yml");

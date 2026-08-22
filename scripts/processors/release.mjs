@@ -125,15 +125,35 @@ function publishJob(config, graph, instance, buildJobs, units) {
     };
 }
 
+function singleUnitPublishJob(config, graph, instance, unit, ownerInstanceId) {
+    const build = buildJob(config, graph, unit, ownerInstanceId);
+    const publish = publishJob(config, graph, instance, [], [unit]);
+    const { needs: _needs, ...singleJob } = publish;
+    return {
+        ...singleJob,
+        name: `Build ${unit.id} and publish verified artifacts`,
+        "runs-on": unit.runner,
+        "timeout-minutes": 60,
+        steps: [
+            ...build.steps.slice(0, -1),
+            ...publish.steps.slice(2 + 1),
+        ],
+    };
+}
+
 export function planReleaseProcessor({ api, config, graph, instance }) {
     if (instance.config.mode === "local") return { mode: "local", managedFiles: [] };
     const units = allBuildUnits(config);
-    const jobs = Object.fromEntries(units.map((unit) => [
-        `build_${unit.id.replaceAll("-", "_")}`,
-        buildJob(config, graph, unit, graph.buildUnitOwners[unit.id]),
-    ]));
-    const buildJobs = Object.keys(jobs);
-    jobs.publish = publishJob(config, graph, instance, buildJobs, units);
+    const jobs = units.length === 1
+        ? { publish: singleUnitPublishJob(config, graph, instance, units[0], graph.buildUnitOwners[units[0].id]) }
+        : Object.fromEntries(units.map((unit) => [
+            `build_${unit.id.replaceAll("-", "_")}`,
+            buildJob(config, graph, unit, graph.buildUnitOwners[unit.id]),
+        ]));
+    if (units.length > 1) {
+        const buildJobs = Object.keys(jobs);
+        jobs.publish = publishJob(config, graph, instance, buildJobs, units);
+    }
     api.addWorkflow({
         path: instance.config.workflowFile,
         model: {

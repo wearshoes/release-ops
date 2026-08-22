@@ -62,6 +62,40 @@ test("same-repository workflow does not expose the optional distribution Secret"
     assert.deepEqual(publishStep.secretRoles, { "source-release": "GITHUB_TOKEN" });
 });
 
+test("single build unit publishes in one job without Actions artifact storage", () => {
+    const config = baseConfig({ mode: "dual-repository" });
+    const instance = releaseInstance(config);
+    const workflows = [];
+    const graph = {
+        order: ["application:build", "release:publish"],
+        buildUnitOwners: { desktop: "application" },
+        nodes: [
+            { id: "application:build", instanceId: "application", stage: "build", secretRoles: [] },
+            {
+                id: "release:publish",
+                instanceId: "release",
+                stage: "publish-finalize",
+                secretRoles: [
+                    { role: "source-release", required: true, defaultName: "GITHUB_TOKEN" },
+                    { role: "distribution-release", required: false, defaultName: "RELEASE_REPO_TOKEN" },
+                ],
+            },
+        ],
+    };
+
+    planReleaseProcessor({ api: { addWorkflow: (value) => workflows.push(value) }, config, graph, instance });
+
+    const jobs = workflows[0].model.jobs;
+    assert.deepEqual(Object.keys(jobs), ["publish"]);
+    assert.equal(jobs.publish["runs-on"], "windows-latest");
+    assert.equal(jobs.publish.needs, undefined);
+    assert.deepEqual(
+        jobs.publish.steps.filter(({ processor }) => processor).map(({ processor }) => processor),
+        ["application:build", "release:publish"],
+    );
+    assert.equal(jobs.publish.steps.some(({ uses }) => /actions\/(?:upload|download)-artifact@/u.test(uses ?? "")), false);
+});
+
 test("GitHub processor publishes the same bytes to private and public drafts through role-scoped HTTPS", async () => {
     const root = await fixtureRoot("release-ops-github-processor-");
     const config = baseConfig({ mode: "dual-repository" });

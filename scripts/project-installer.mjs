@@ -129,7 +129,9 @@ export async function desiredProjectFiles(root, config, graph, registry, workflo
 async function previousManagedState(root) {
     try {
         const value = JSON.parse(await readFile(resolve(root, ".release-ops", "managed-files.json"), "utf8"));
-        if (value.schemaVersion === MANAGED_SCHEMA || value.schemaVersion === "release-ops-managed-files/v2") return value;
+        if ([MANAGED_SCHEMA, "release-ops-managed-files/v1", "release-ops-managed-files/v2"].includes(value.schemaVersion)) {
+            return value;
+        }
         throw new Error(`Managed files schema is incompatible: ${value.schemaVersion}`);
     } catch (error) {
         if (error?.code === "ENOENT") return null;
@@ -145,18 +147,10 @@ function previousFiles(state) {
     return result;
 }
 
-function isReinitializableConfig(path, bytes) {
-    if (path !== ".release-ops/config.json" || !bytes) return false;
-    try {
-        return JSON.parse(bytes.toString("utf8")).schemaVersion === "release-ops/config/v2";
-    } catch {
-        return false;
-    }
-}
-
 export async function planProjectFiles(root, config, graph, registry, workflows, {
     adoptions = [],
     contributions = [],
+    replaceExistingConfig = false,
 } = {}) {
     const previous = previousFiles(await previousManagedState(root));
     const desired = await desiredProjectFiles(root, config, graph, registry, workflows, { adoptions, contributions });
@@ -174,7 +168,8 @@ export async function planProjectFiles(root, config, graph, registry, workflows,
         if (operation !== "unchanged") {
             if (previous[path] && currentHash !== previousHash) {
                 conflicts.push({ path, reason: "managed-file-changed", expectedHash: previousHash, currentHash });
-            } else if (!previous[path] && currentHash && wanted?.mode !== "adopted" && !isReinitializableConfig(path, current)) {
+            } else if (!previous[path] && currentHash && wanted?.mode !== "adopted"
+                && !(replaceExistingConfig && path === ".release-ops/config.json")) {
                 conflicts.push({ path, reason: "unmanaged-file-exists", currentHash });
             }
         }

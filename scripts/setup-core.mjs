@@ -455,6 +455,7 @@ export async function createSetupPlan(root, answers, {
     const managed = await planProjectFiles(resolve(root), config, graph, registry, contributions.workflows, {
         adoptions: answers.managedFileAdoptions,
         contributions: contributions.managedFiles,
+        replaceExistingConfig: mode === "reconfigure" || mode === "reinitialize",
     });
     if (managed.conflicts.length) {
         throw new Error(`Setup plan has managed file conflicts: ${managed.conflicts.map(({ path }) => path).join(", ")}`);
@@ -533,6 +534,7 @@ export async function applySetupPlan(plan, confirmation, {
     const preflight = await planProjectFiles(root, config, graph, registry, contributions.workflows, {
         adoptions: plan.managedFiles.adoptions,
         contributions: contributions.managedFiles,
+        replaceExistingConfig: plan.mode === "reconfigure" || plan.mode === "reinitialize",
     });
     if (stableJson(publicManagedPlan(preflight)) !== stableJson(plan.managedFiles)) {
         throw new Error("Repository files or workflow model changed after the confirmed plan");
