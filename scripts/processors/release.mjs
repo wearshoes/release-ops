@@ -17,6 +17,18 @@ function instanceById(config, instanceId) {
     return config.extensions.find((candidate) => candidate.instanceId === instanceId);
 }
 
+function releaseToolSetupSteps(graph) {
+    const toolNode = graph.order.map((id) => graph.nodes.find((node) => node.id === id))
+        .find((node) => node.permissions?.commands?.some(({ id }) => id === "install-sentry-cli-posix"));
+    return toolNode ? [{
+        name: "Install Sentry CLI",
+        processor: toolNode.id,
+        operation: "setup-cli",
+        arguments: [],
+        secretRoles: {},
+    }] : [];
+}
+
 function secretMappings(node, instance, selectedRoles = null) {
     return Object.fromEntries(node.secretRoles.flatMap(({ role, defaultName }) => {
         if (selectedRoles && !selectedRoles.includes(role)) return [];
@@ -71,6 +83,7 @@ function buildJob(config, graph, unit, ownerInstanceId) {
         steps: [
             { uses: ACTIONS.checkout, with: { ref: "${{ inputs.sourceSha }}", "fetch-depth": 0, "persist-credentials": false } },
             { uses: ACTIONS.node, with: { "node-version": "22" } },
+            ...releaseToolSetupSteps(graph),
             {
                 name: `Build ${unit.id}`,
                 processor: `${ownerInstanceId}:build`,
@@ -104,6 +117,7 @@ function publishJob(config, graph, instance, buildJobs, units) {
         steps: [
             { uses: ACTIONS.checkout, with: { ref: "${{ inputs.sourceSha }}", "fetch-depth": 0, "persist-credentials": false } },
             { uses: ACTIONS.node, with: { "node-version": "22" } },
+            ...releaseToolSetupSteps(graph),
             ...units.map((unit) => ({
                 uses: ACTIONS.download,
                 with: { name: `release-ops-${unit.id}`, path: "." },
@@ -136,7 +150,7 @@ function singleUnitPublishJob(config, graph, instance, unit, ownerInstanceId) {
         "timeout-minutes": 60,
         steps: [
             ...build.steps.slice(0, -1),
-            ...publish.steps.slice(2 + 1),
+            ...publish.steps.slice(2 + releaseToolSetupSteps(graph).length + 1),
         ],
     };
 }

@@ -96,6 +96,55 @@ test("single build unit publishes in one job without Actions artifact storage", 
     assert.equal(jobs.publish.steps.some(({ uses }) => /actions\/(?:upload|download)-artifact@/u.test(uses ?? "")), false);
 });
 
+test("Sentry release workflows install one pinned CLI before processors execute", () => {
+    const config = baseConfig({ mode: "dual-repository", sentry: true });
+    const instance = releaseInstance(config);
+    const workflows = [];
+    const graph = {
+        order: ["application:build", "sentry:release", "release:publish"],
+        buildUnitOwners: { desktop: "application" },
+        nodes: [
+            { id: "application:build", instanceId: "application", stage: "build", permissions: { commands: [] }, secretRoles: [] },
+            {
+                id: "sentry:release",
+                instanceId: "sentry",
+                stage: "publish-stage",
+                permissions: {
+                    commands: [
+                        { id: "install-sentry-cli-posix", executable: "npm", argsPrefix: ["install", "--global", "@sentry/cli@3.6.2"] },
+                        { id: "sentry-cli", executable: "sentry-cli" },
+                    ],
+                },
+                secretRoles: [{ role: "build-upload", required: true, defaultName: "SENTRY_ORG_CI_TOKEN" }],
+            },
+            {
+                id: "release:publish",
+                instanceId: "release",
+                stage: "publish-finalize",
+                permissions: { commands: [] },
+                secretRoles: [
+                    { role: "source-release", required: true, defaultName: "GITHUB_TOKEN" },
+                    { role: "distribution-release", required: false, defaultName: "RELEASE_REPO_TOKEN" },
+                ],
+            },
+        ],
+    };
+
+    planReleaseProcessor({ api: { addWorkflow: (value) => workflows.push(value) }, config, graph, instance });
+
+    const steps = workflows[0].model.jobs.publish.steps;
+    const setupSteps = steps.filter(({ name }) => name === "Install Sentry CLI");
+    assert.deepEqual(setupSteps, [{
+        name: "Install Sentry CLI",
+        processor: "sentry:release",
+        operation: "setup-cli",
+        arguments: [],
+        secretRoles: {},
+    }]);
+    assert.equal(steps.findIndex(({ name }) => name === "Install Sentry CLI") < steps.findIndex(({ processor }) => processor === "application:build"), true);
+    assert.equal(steps.some(({ run }) => run !== undefined), false);
+});
+
 test("GitHub processor publishes the same bytes to private and public drafts through role-scoped HTTPS", async () => {
     const root = await fixtureRoot("release-ops-github-processor-");
     const config = baseConfig({ mode: "dual-repository" });

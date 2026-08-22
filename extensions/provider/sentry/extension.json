@@ -124,6 +124,32 @@
       "permissions": {
         "commands": [
           {
+            "id": "install-sentry-cli-posix",
+            "executable": "npm",
+            "argsPrefix": [
+              "install",
+              "--global",
+              "@sentry/cli@3.6.2",
+              "--no-audit",
+              "--no-fund"
+            ]
+          },
+          {
+            "id": "install-sentry-cli-windows",
+            "executable": "cmd.exe",
+            "argsPrefix": [
+              "/d",
+              "/s",
+              "/c",
+              "npm.cmd",
+              "install",
+              "--global",
+              "@sentry/cli@3.6.2",
+              "--no-audit",
+              "--no-fund"
+            ]
+          },
+          {
             "id": "sentry-cli",
             "executable": "sentry-cli"
           }

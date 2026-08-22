@@ -5,6 +5,7 @@ const ACTIONS = Object.freeze({
     checkout: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
     node: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
 });
+const SENTRY_CLI_VERSION = "3.6.2";
 
 export async function planSentryProcessor({ api, instance, config, graph }) {
     const extensionCheck = await checkSentrySdk({ api, config, graph, instance });
@@ -150,7 +151,14 @@ export async function debugArtifactsProcessor({ api, config, instance, arguments
     return { release, dist, unitId: input.unitId, commandCount, completed: true };
 }
 
-export async function releaseProcessor({ api, config, instance, arguments: args = [], execute = false }) {
+export async function releaseProcessor({ api, config, instance, operation, arguments: args = [], execute = false }) {
+    if (operation === "setup-cli") {
+        if (execute) {
+            const commandId = process.platform === "win32" ? "install-sentry-cli-windows" : "install-sentry-cli-posix";
+            await api.execFile(commandId);
+        }
+        return { version: SENTRY_CLI_VERSION, completed: execute };
+    }
     if (!execute) return { releaseTemplate: instance.config.releaseTemplate, completed: false };
     const input = parseReleaseArguments(args);
     const release = applyTemplate(instance.config.releaseTemplate, releaseValues(config, input));

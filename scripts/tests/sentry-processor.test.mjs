@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createKernelApi } from "../kernel-api.mjs";
 import { renderIncident, sanitizeIncident } from "../processors/sentry-lifecycle.mjs";
-import { debugArtifactsProcessor, resolveProcessor, scheduledIngestProcessor } from "../processors/sentry.mjs";
+import { debugArtifactsProcessor, releaseProcessor, resolveProcessor, scheduledIngestProcessor } from "../processors/sentry.mjs";
 import { baseConfig, BUILD_NUMBERS, fixtureRoot, SOURCE_SHA } from "./fixtures.mjs";
 
 function sentryInstance(config) {
@@ -92,6 +93,31 @@ test("debug artifact processor uploads Proguard through shell:false with only th
     assert.equal(calls[0][2].env.SENTRY_AUTH_TOKEN, "ci-value");
     assert.equal(calls[0][2].env.SENTRY_ORG_CI_TOKEN, undefined);
     assert.equal(calls[0][2].env.SENTRY_URL, "https://sentry.io");
+});
+
+test("Sentry CLI setup uses the pinned platform command through shell:false", async () => {
+    const config = baseConfig({ mode: "dual-repository", sentry: true });
+    const instance = sentryInstance(config);
+    const manifest = JSON.parse(await readFile("extensions/provider/sentry/extension.json", "utf8"));
+    const release = manifest.processors.find(({ id }) => id === "release");
+    const commands = release.permissions.commands;
+    const calls = [];
+    const api = createKernelApi({
+        root: process.cwd(),
+        node: processorNode({ id: "release", commands }),
+        execFileImpl: async (...args) => { calls.push(args); return { stdout: "" }; },
+    });
+
+    const result = await releaseProcessor({ api, config, instance, operation: "setup-cli", execute: true });
+
+    const windows = process.platform === "win32";
+    assert.equal(calls[0][0], windows ? "cmd.exe" : "npm");
+    assert.deepEqual(calls[0][1], windows
+        ? ["/d", "/s", "/c", "npm.cmd", "install", "--global", "@sentry/cli@3.6.2", "--no-audit", "--no-fund"]
+        : ["install", "--global", "@sentry/cli@3.6.2", "--no-audit", "--no-fund"]);
+    assert.equal(calls[0][2].shell, false);
+    assert.equal(JSON.stringify(commands).includes("@latest"), false);
+    assert.deepEqual(result, { version: "3.6.2", completed: true });
 });
 
 test("scheduled ingest uses the 75-minute window and writes only sanitized issue data", async () => {
